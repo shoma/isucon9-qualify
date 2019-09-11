@@ -1,7 +1,6 @@
-#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 import socket
-import io
 import os
 import random
 import string
@@ -11,13 +10,11 @@ import subprocess
 import MySQLdb.cursors
 import flask
 import bcrypt
-import pathlib
 import requests
 
-base_path = pathlib.Path(__file__).resolve().parent.parent
-static_folder = base_path / 'public'
+static_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../public'))
 
-app = flask.Flask(__name__, static_folder=str(static_folder), static_url_path='')
+app = flask.Flask(__name__, static_folder=str(static_folder), static_url_path='', template_folder=static_folder)
 app.config['SECRET_KEY'] = 'isucari'
 app.config['UPLOAD_FOLDER'] = '../public/upload'
 
@@ -1358,6 +1355,3 @@ def get_index(*args, **kwargs):
 
 # Assets
 # @app.route("/*")
-
-if __name__ == "__main__":
-    app.run(port=8000, debug=True, threaded=True)
