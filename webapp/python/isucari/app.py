@@ -7,7 +7,7 @@ import string
 import datetime
 import subprocess
 
-import MySQLdb.cursors
+import pymysql.cursors
 import flask
 import bcrypt
 import requests
@@ -64,14 +64,14 @@ def dbh():
     if hasattr(flask.g, 'db'):
         return flask.g.db
 
-    flask.g.db = MySQLdb.connect(
+    flask.g.db = pymysql.connect(
         host=os.getenv('MYSQL_HOST', '127.0.0.1'),
         port=int(os.getenv('MYSQL_PORT', 3306)),
         user=os.getenv('MYSQL_USER', 'isucari'),
         password=os.getenv('MYSQL_PASS', 'isucari'),
         db=os.getenv('MYSQL_DBNAME', 'isucari'),
         charset='utf8mb4',
-        cursorclass=MySQLdb.cursors.DictCursor,
+        cursorclass=pymysql.cursors.DictCursor,
         autocommit=True,
     )
     cur = flask.g.db.cursor()
@@ -106,7 +106,7 @@ def get_user():
             user = c.fetchone()
             if user is None:
                 http_json_error(requests.codes['not_found'], "user not found")
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], "db error")
     return user
@@ -124,7 +124,7 @@ def get_user_or_none():
             user = c.fetchone()
             if user is None:
                 return None
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         return None
     return user
@@ -139,7 +139,7 @@ def get_user_simple_by_id(user_id):
             user = c.fetchone()
             if user is None:
                 http_json_error(requests.codes['not_found'], "user not found")
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], "db error")
     return user
@@ -255,7 +255,7 @@ def post_initialize():
                 shipment_service_url
             ))
             conn.commit()
-        except MySQLdb.Error as err:
+        except pymysql.Error as err:
             conn.rollback()
             app.logger.exception(err)
             http_json_error(requests.codes['internal_server_error'], "db error")
@@ -333,7 +333,7 @@ def get_new_items():
                 has_next = True
                 item_simples = item_simples[:Constants.ITEMS_PER_PAGE]
 
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], "db error")
 
@@ -416,7 +416,7 @@ def get_new_category_items(root_category_id=None):
 
                 item_simples.append(item)
 
-        except MySQLdb.Error as err:
+        except pymysql.Error as err:
             app.logger.exception(err)
             http_json_error(requests.codes['internal_server_error'], "db error")
 
@@ -521,7 +521,7 @@ def get_transactions():
                         item["transaction_evidence_status"] = transaction_evidence["status"]
                         item["shipping_status"] = ssr["status"]
 
-        except MySQLdb.Error as err:
+        except pymysql.Error as err:
             app.logger.exception(err)
             http_json_error(requests.codes['internal_server_error'], "db error")
 
@@ -597,7 +597,7 @@ def get_user_items(user_id=None):
                 item = to_item_json(item, simple=True)
                 item_simples.append(item)
 
-        except MySQLdb.Error as err:
+        except pymysql.Error as err:
             app.logger.exception(err)
             http_json_error(requests.codes['internal_server_error'], "db error")
 
@@ -661,7 +661,7 @@ def get_item(item_id=None):
                 item["buyer"] = {}
                 item["buyer_id"] = 0
 
-        except MySQLdb.Error as err:
+        except pymysql.Error as err:
             app.logger.exception(err)
             http_json_error(requests.codes['internal_server_error'], "db error")
 
@@ -688,7 +688,7 @@ def post_item_edit():
                 http_json_error(requests.codes['not_found'], "item not found")
             if item["seller_id"] != user["id"]:
                 http_json_error(requests.codes['forbidden'], "自分の商品以外は編集できません")
-        except MySQLdb.Error as err:
+        except pymysql.Error as err:
             app.logger.exception(err)
             http_json_error(requests.codes['internal_server_error'], "db error")
 
@@ -712,7 +712,7 @@ def post_item_edit():
             c.execute(sql, (flask.request.json["item_id"],))
             item = c.fetchone()
             conn.commit()
-        except MySQLdb.Error as err:
+        except pymysql.Error as err:
             conn.rollback()
             app.logger.exception(err)
             http_json_error(requests.codes['internal_server_error'], "db error")
@@ -837,7 +837,7 @@ def post_buy():
                 ""
             ))
         conn.commit()
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], "db error")
     return flask.jsonify(dict(transaction_evidence_id=transaction_evidence_id))
@@ -902,7 +902,7 @@ def post_sell():
                 seller['id'],
             ))
             conn.commit()
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], "db error")
 
@@ -923,7 +923,7 @@ def post_ship():
             transaction_evidence = c.fetchone()
             if transaction_evidence is None:
                 http_json_error(requests.codes["not_found"], "transaction_evidences not found")
-        except MySQLdb.Error as err:
+        except pymysql.Error as err:
             app.logger.exception(err)
             http_json_error(requests.codes['internal_server_error'], "db error")
     if transaction_evidence["seller_id"] != user["id"]:
@@ -978,7 +978,7 @@ def post_ship():
                 transaction_evidence["id"],
             ))
         conn.commit()
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], "db error")
     return flask.jsonify(dict(
@@ -999,7 +999,7 @@ def post_ship_done():
             transaction_evidence = c.fetchone()
             if transaction_evidence is None:
                 http_json_error(requests.codes["not_found"], "transaction_evidences not found")
-        except MySQLdb.Error as err:
+        except pymysql.Error as err:
             app.logger.exception(err)
             http_json_error(requests.codes['internal_server_error'], "db error")
     if transaction_evidence["seller_id"] != user["id"]:
@@ -1055,7 +1055,7 @@ def post_ship_done():
             ))
 
         conn.commit()
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], "db error")
     return flask.jsonify(dict(transaction_evidence_id=transaction_evidence["id"]))
@@ -1076,7 +1076,7 @@ def post_complete():
             transaction_evidence = c.fetchone()
             if transaction_evidence is None:
                 http_json_error(requests.codes["not_found"], "transaction_evidences not found")
-        except MySQLdb.Error as err:
+        except pymysql.Error as err:
             app.logger.exception(err)
             http_json_error(requests.codes['internal_server_error'], "db error")
 
@@ -1139,7 +1139,7 @@ def post_complete():
             ))
 
         conn.commit()
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], "db error")
     return flask.jsonify(dict(transaction_evidence_id=transaction_evidence["id"]))
@@ -1179,7 +1179,7 @@ def get_qrcode(transaction_evidence_id):
             if len(shipping["img_binary"]) == 0:
                 http_json_error(requests.codes['internal_server_error'], "empty qrcode image")
 
-        except MySQLdb.Error as err:
+        except pymysql.Error as err:
             app.logger.exception(err)
             http_json_error(requests.codes['internal_server_error'], "db error")
 
@@ -1231,7 +1231,7 @@ def post_bump():
             target_item = c.fetchone()
 
         conn.commit()
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], "db error")
 
@@ -1257,7 +1257,7 @@ def get_settings():
         with conn.cursor() as c:
             c.execute(sql)
             categories = c.fetchall()
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], "db error")
     outputs['categories'] = categories
@@ -1279,7 +1279,7 @@ def post_login():
             if user is None or \
                     not bcrypt.checkpw(flask.request.json['password'].encode('utf-8'), user['hashed_password']):
                 http_json_error(requests.codes['unauthorized'], 'アカウント名かパスワードが間違えています')
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], 'db error')
 
@@ -1301,7 +1301,7 @@ def post_register():
             c.execute(sql, [flask.request.json['account_name'], hashedpw, flask.request.json['address']])
         conn.commit()
         user_id = c.lastrowid
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], 'db error')
 
@@ -1327,7 +1327,7 @@ def get_reports():
             for k in transaction_evidences:
                 del k["created_at"]
                 del k["updated_at"]
-    except MySQLdb.Error as err:
+    except pymysql.Error as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], "db error")
     return flask.jsonify(transaction_evidences)
