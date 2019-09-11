@@ -5,37 +5,30 @@ import os
 import datetime
 import subprocess
 
-import pymysql.cursors
 import flask
 import bcrypt
 import requests
+from sqlalchemy import and_, or_
 
-from . import utils
+from . import (utils,
+               database,
+               models,
+               )
 
 static_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../public'))
 
 app = flask.Flask(__name__, static_folder=str(static_folder), static_url_path='', template_folder=static_folder)
 app.config['SECRET_KEY'] = 'isucari'
 app.config['UPLOAD_FOLDER'] = os.path.join(static_folder, 'upload')
+app.config['SQLALCHEMY_DATABASE_URI'] = database.get_dsn()
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
+
+database.init_db(app)
 
 
 class Constants(object):
     DEFAULT_PAYMENT_SERVICE_URL = "http://127.0.0.1:5555"
     DEFAULT_SHIPMENT_SERVICE_URL = "http://127.0.0.1:7000"
-
-    ITEM_STATUS_ON_SALE = "on_sale"
-    ITEM_STATUS_TRADING = 'trading'
-    ITEM_STATUS_SOLD_OUT = 'sold_out'
-    ITEM_STATUS_STOP = 'stop'
-    ITEM_STATUS_CANCEL = 'cancel'
-    TRANSACTION_EVIDENCE_STATUS_WAIT_SHIPPING = 'wait_shipping'
-    TRANSACTION_EVIDENCE_STATUS_WAIT_DONE = 'wait_done'
-    TRANSACTION_EVIDENCE_STATUS_DONE = 'done'
-
-    SHIPPING_STATUS_INITIAL = 'initial'
-    SHIPPING_STATUS_WAIT_PICKUP = 'wait_pickup'
-    SHIPPING_STATUS_SHIPPING = 'shipping'
-    SHIPPING_STATUS_DONE = 'done'
 
     ISUCARI_API_TOKEN = 'Bearer 75ugk2m37a750fwir5xr-22l6h4wmue1bwrubzwd0'
 
@@ -44,6 +37,7 @@ class Constants(object):
 
     ITEMS_PER_PAGE = 48
     TRANSACTIONS_PER_PAGE = 10
+    BUMP_ALLOW_SECONDS = 3
 
 
 class HttpException(Exception):
@@ -60,26 +54,6 @@ class HttpException(Exception):
         return response
 
 
-def dbh():
-    if hasattr(flask.g, 'db'):
-        return flask.g.db
-
-    flask.g.db = pymysql.connect(
-        host=os.getenv('MYSQL_HOST', '127.0.0.1'),
-        port=int(os.getenv('MYSQL_PORT', 3306)),
-        user=os.getenv('MYSQL_USER', 'isucari'),
-        password=os.getenv('MYSQL_PASS', 'isucari'),
-        db=os.getenv('MYSQL_DBNAME', 'isucari'),
-        charset='utf8mb4',
-        cursorclass=pymysql.cursors.DictCursor,
-        autocommit=True,
-    )
-    cur = flask.g.db.cursor()
-    cur.execute(
-        "SET SESSION sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
-    return flask.g.db
-
-
 def http_json_error(code, msg):
     raise HttpException(code, msg)
 
@@ -93,64 +67,30 @@ def get_user():
     user_id = flask.session.get("user_id")
     if user_id is None:
         http_json_error(requests.codes['not_found'], "no session")
-    try:
-        conn = dbh()
-        with conn.cursor() as c:
-            sql = "SELECT * FROM `users` WHERE `id` = %s"
-            c.execute(sql, [user_id])
-            user = c.fetchone()
-            if user is None:
-                http_json_error(requests.codes['not_found'], "user not found")
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], "db error")
-    return user
+    return get_user_by_id(user_id)
 
 
 def get_user_or_none():
     user_id = flask.session.get("user_id")
     if user_id is None:
         return None
-    try:
-        conn = dbh()
-        with conn.cursor() as c:
-            sql = "SELECT * FROM `users` WHERE `id` = %s"
-            c.execute(sql, [user_id])
-            user = c.fetchone()
-            if user is None:
-                return None
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        return None
-    return user
+    return models.User.query.get(user_id)
 
 
-def get_user_simple_by_id(user_id):
-    try:
-        conn = dbh()
-        with conn.cursor() as c:
-            sql = "SELECT * FROM `users` WHERE `id` = %s"
-            c.execute(sql, [user_id])
-            user = c.fetchone()
-            if user is None:
-                http_json_error(requests.codes['not_found'], "user not found")
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], "db error")
+def get_user_by_id(user_id):
+    user = models.User.query.get(user_id)
+    if user is None:
+        raise HttpException(requests.codes.not_found, "user not found")
     return user
 
 
 def get_category_by_id(category_id):
-    conn = dbh()
-    sql = "SELECT * FROM `categories` WHERE `id` = %s"
-    with conn.cursor() as c:
-        c.execute(sql, (category_id,))
-        category = c.fetchone()
-        # TODO: check err
-    if category['parent_id'] != 0:
-        parent = get_category_by_id(category['parent_id'])
-        if parent is not None:
-            category['parent_category_name'] = parent['category_name']
+    category = models.Category.query.get(category_id)
+    if category is None:
+        raise HttpException(requests.codes.not_found, "category not found")
+    if category.parent_id != 0:
+        parent = models.Category.query.get(category.parent_id)
+        category.parent_category_name = parent.category_name
     return category
 
 
@@ -170,9 +110,10 @@ def to_item_json(item, simple=False):
     )
 
     if simple:
-        keys = ("id", "seller_id", "seller", "status", "name", "price", "image_url", "category_id", "category", "created_at")
+        keys = ("id", "seller_id", "seller", "status", "name", "price", "image_url",
+                "category_id", "category", "created_at")
 
-    return {k:v for k,v in item.items() if k in keys}
+    return {k: v for k, v in item.items() if k in keys}
 
 
 def ensure_required_payload(keys=None):
@@ -189,26 +130,22 @@ def ensure_valid_csrf_token():
 
 
 def get_config(name):
-    conn = dbh()
-    sql = "SELECT * FROM `configs` WHERE `name` = %s"
-    with conn.cursor() as c:
-        c.execute(sql, (name,))
-        config = c.fetchone()
-    return config
+    return models.Config.query.get(name)
 
 
 def get_payment_service_url():
     config = get_config("payment_service_url")
-    return Constants.DEFAULT_PAYMENT_SERVICE_URL if config is None else config['val']
+    return Constants.DEFAULT_PAYMENT_SERVICE_URL if config is None else config.val
 
 
 def get_shipment_service_url():
     config = get_config("shipment_service_url")
-    return Constants.DEFAULT_SHIPMENT_SERVICE_URL if config is None else config['val']
+    return Constants.DEFAULT_SHIPMENT_SERVICE_URL if config is None else config.val
 
 
-def api_shipment_status(shipment_url, params={}):
-
+def api_shipment_status(shipment_url, params=None):
+    if params is None:
+        params = {}
     try:
         res = requests.post(
             shipment_url + "/status",
@@ -216,51 +153,36 @@ def api_shipment_status(shipment_url, params={}):
             json=params,
         )
         res.raise_for_status()
+        return res.json()
     except (socket.gaierror, requests.HTTPError) as err:
         app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'])
+        http_json_error(requests.codes.internal_server_error, "")
 
-    return res.json()
 
 # API
 @app.route("/initialize", methods=["POST"])
 def post_initialize():
-    conn = dbh()
-
     subprocess.call(["../sql/init.sh"])
 
     payment_service_url = flask.request.json.get('payment_service_url', Constants.DEFAULT_PAYMENT_SERVICE_URL)
     shipment_service_url = flask.request.json.get('shipment_service_url', Constants.DEFAULT_SHIPMENT_SERVICE_URL)
 
-    conn.begin()
-    with conn.cursor() as c:
-        try:
-            sql = "INSERT INTO `configs` (`name`, `val`) VALUES (%s, %s) ON DUPLICATE KEY UPDATE `val` = VALUES(`val`)"
+    payment_service_url_config = models.Config(name="payment_service_url", val=payment_service_url)
+    database.db.session.add(payment_service_url_config)
 
-            c.execute(sql, (
-                "payment_service_url",
-                payment_service_url
-            ))
-            c.execute(sql, (
-                "shipment_service_url",
-                shipment_service_url
-            ))
-            conn.commit()
-        except pymysql.Error as err:
-            conn.rollback()
-            app.logger.exception(err)
-            http_json_error(requests.codes['internal_server_error'], "db error")
+    shipment_service_url_config = models.Config(name="shipment_service_url", val=shipment_service_url)
+    database.db.session.add(payment_service_url_config)
+    database.db.session.add(shipment_service_url_config)
+    database.db.session.commit()
 
     return flask.jsonify({
         "campaign": 0,  # キャンペーン実施時には還元率の設定を返す。詳しくはマニュアルを参照のこと。
-        "language": "python" # 実装言語を返す
+        "language": "python"  # 実装言語を返す
     })
 
 
 @app.route("/new_items.json", methods=["GET"])
 def get_new_items():
-    # TODO: check err
-
     item_id = 0
     created_at = 0
 
@@ -275,69 +197,40 @@ def get_new_items():
         if not created_at_str.isdecimal() or int(created_at_str) < 0:
             http_json_error(requests.codes['bad_request'], "created_at param error")
         created_at = int(created_at_str)
-
+    if item_id > 0 and created_at > 0:
+        # paging
+        results = models.Item.query.filter(
+            models.Item.status.in_([models.ItemStatus.on_sale, models.ItemStatus.sold_out]),
+            or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at),
+                and_(models.Item.created_at <= datetime.datetime.fromtimestamp(created_at),
+                     models.Item.id < item_id))) \
+            .order_by(models.Item.created_at.desc(), models.Item.id.desc()) \
+            .limit(Constants.ITEMS_PER_PAGE + 1)
+    else:
+        results = models.Item.query.filter(
+            models.Item.status.in_([models.ItemStatus.on_sale, models.ItemStatus.sold_out])) \
+            .order_by(models.Item.created_at.desc(), models.Item.id.desc()) \
+            .limit(Constants.ITEMS_PER_PAGE + 1)
     items = []
+    for row in results:
+        row.seller = get_user_by_id(row.seller_id).for_simple_json()
+        row.category = get_category_by_id(row.category_id).for_json()
+        row.image_url = utils.get_image_url(row.image_name)
+        items.append(row)
 
-    try:
-        conn = dbh()
-        with conn.cursor() as c:
-            if item_id > 0 and created_at > 0:
-                # paging
-                sql = "SELECT * FROM `items` WHERE `status` IN (%s,%s) AND (`created_at` < %s OR (`created_at` <= %s AND `id` < %s)) ORDER BY `created_at` DESC, `id` DESC LIMIT %s"
-                c.execute(sql, (
-                    Constants.ITEM_STATUS_ON_SALE,
-                    Constants.ITEM_STATUS_SOLD_OUT,
-                    datetime.datetime.fromtimestamp(created_at),
-                    datetime.datetime.fromtimestamp(created_at),
-                    item_id,
-                    Constants.ITEMS_PER_PAGE + 1,
-                ))
-            else:
-                # 1st page
-                sql = "SELECT * FROM `items` WHERE `status` IN (%s,%s) ORDER BY `created_at` DESC, `id` DESC LIMIT %s"
-                c.execute(sql, (
-                    Constants.ITEM_STATUS_ON_SALE,
-                    Constants.ITEM_STATUS_SOLD_OUT,
-                    Constants.ITEMS_PER_PAGE + 1
-                ))
-
-            item_simples = []
-
-            while True:
-                item = c.fetchone()
-
-                if item is None:
-                    break
-
-                seller = get_user_simple_by_id(item["seller_id"])
-                category = get_category_by_id(item["category_id"])
-
-                item["category"] = category
-                item["seller"] = to_user_json(seller)
-                item["image_url"] = utils.get_image_url(item["image_name"])
-                item = to_item_json(item, simple=True)
-
-                item_simples.append(item)
-
-            has_next = False
-            if len(item_simples) > Constants.ITEMS_PER_PAGE:
-                has_next = True
-                item_simples = item_simples[:Constants.ITEMS_PER_PAGE]
-
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], "db error")
+    has_next = False
+    if len(items) > Constants.ITEMS_PER_PAGE:
+        has_next = True
+        items = items[:Constants.ITEMS_PER_PAGE]
 
     return flask.jsonify(dict(
-        items=item_simples,
+        items=[i.for_simple_json() for i in items],
         has_next=has_next,
     ))
 
 
 @app.route("/new_items/<root_category_id>.json", methods=["GET"])
 def get_new_category_items(root_category_id=None):
-    conn = dbh()
-
     root_category = get_category_by_id(root_category_id)
 
     item_id = 0
@@ -355,71 +248,40 @@ def get_new_category_items(root_category_id=None):
             http_json_error(requests.codes['bad_request'], "created_at param error")
         created_at = int(created_at_str)
 
-    category_ids = []
-    with conn.cursor() as c:
-        try:
-            sql = "SELECT id FROM `categories` WHERE parent_id=%s"
-            c.execute(sql, (
-                root_category_id,
-            ))
+    categories = models.Category.query.filter(models.Category.parent_id == root_category_id).with_entities(
+        models.Category.id)
 
-            while True:
-                category = c.fetchone()
-                if category is None:
-                    break
-                category_ids.append(category["id"])
-
-            if item_id > 0 and created_at > 0:
-                sql = "SELECT * FROM `items` WHERE `status` IN (%s,%s) AND category_id IN ("+ ",".join(["%s"]*len(category_ids))+ ") AND (`created_at` < %s OR (`created_at` < %s AND `id` < %s)) ORDER BY `created_at` DESC, `id` DESC LIMIT %s"
-                c.execute(sql, (
-                    Constants.ITEM_STATUS_ON_SALE,
-                    Constants.ITEM_STATUS_SOLD_OUT,
-                    *category_ids,
-                    datetime.datetime.fromtimestamp(created_at),
-                    datetime.datetime.fromtimestamp(created_at),
-                    item_id,
-                    Constants.ITEMS_PER_PAGE + 1,
-                ))
-            else:
-
-                sql = "SELECT * FROM `items` WHERE `status` IN (%s,%s) AND category_id IN ("+ ",".join(["%s"]*len(category_ids))+ ") ORDER BY created_at DESC, id DESC LIMIT %s"
-                c.execute(sql, (
-                    Constants.ITEM_STATUS_ON_SALE,
-                    Constants.ITEM_STATUS_SOLD_OUT,
-                    *category_ids,
-                    Constants.ITEMS_PER_PAGE + 1,
-                ))
-
-            item_simples = []
-            while True:
-                item = c.fetchone()
-
-                if item is None:
-                    break
-
-                seller = get_user_simple_by_id(item["seller_id"])
-                category = get_category_by_id(item["category_id"])
-
-                item["category"] = category
-                item["seller"] = to_user_json(seller)
-                item["image_url"] = utils.get_image_url(item["image_name"])
-                item = to_item_json(item, simple=True)
-
-                item_simples.append(item)
-
-        except pymysql.Error as err:
-            app.logger.exception(err)
-            http_json_error(requests.codes['internal_server_error'], "db error")
+    if item_id > 0 and created_at > 0:
+        results = models.Item.query.filter(
+            models.Item.status.in_([models.ItemStatus.on_sale, models.ItemStatus.sold_out]),
+            models.Item.category_id.in_(categories),
+            or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at), models.Item.id < item_id)) \
+            .order_by(models.Item.created_at.desc()) \
+            .order_by(models.Item.id.desc()) \
+            .limit(Constants.ITEMS_PER_PAGE + 1)
+    else:
+        results = models.Item.query.filter(
+            models.Item.status.in_([models.ItemStatus.on_sale, models.ItemStatus.sold_out]),
+            models.Item.category_id.in_(categories)) \
+            .order_by(models.Item.created_at.desc()) \
+            .order_by(models.Item.id.desc()) \
+            .limit(Constants.ITEMS_PER_PAGE + 1)
+    items = []
+    for row in results:
+        row.seller = get_user_by_id(row.seller_id).for_simple_json()
+        row.category = get_category_by_id(row.category_id).for_json()
+        row.image_url = utils.get_image_url(row.image_name)
+        items.append(row)
 
     has_next = False
-    if len(item_simples) > Constants.ITEMS_PER_PAGE:
+    if len(items) > Constants.ITEMS_PER_PAGE:
         has_next = True
-        item_simples = item_simples[:Constants.ITEMS_PER_PAGE]
+        items = items[:Constants.ITEMS_PER_PAGE]
 
     return flask.jsonify(dict(
-        root_category_id=root_category["id"],
-        root_category_name=root_category["category_name"],
-        items=item_simples,
+        root_category_id=root_category.id,
+        root_category_name=root_category.category_name,
+        items=[i.for_simple_json() for i in items],
         has_next=has_next,
     ))
 
@@ -427,7 +289,6 @@ def get_new_category_items(root_category_id=None):
 @app.route("/users/transactions.json", methods=["GET"])
 def get_transactions():
     user = get_user()
-    conn = dbh()
 
     item_id = 0
     created_at = 0
@@ -444,93 +305,65 @@ def get_transactions():
             http_json_error(requests.codes['bad_request'], "created_at param error")
         created_at = int(created_at_str)
 
-    with conn.cursor() as c:
+    if item_id > 0 and created_at > 0:
+        # paging
+        result = models.Item.query \
+            .filter(or_(models.Item.seller_id == user.id, models.Item.buyer_id == user.id), models.Item.status.in_([
+            models.ItemStatus.on_sale,
+            models.ItemStatus.trading,
+            models.ItemStatus.sold_out,
+            models.ItemStatus.cancel,
+            models.ItemStatus.stop])) \
+            .filter(or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at),
+                        and_(models.Item.created_at <= datetime.datetime.fromtimestamp(created_at),
+                             models.Item.created_at < item_id))) \
+            .order_by(models.Item.created_at.desc()) \
+            .order_by(models.Item.id.desc()) \
+            .limit(Constants.ITEMS_PER_PAGE + 1)
+    else:
+        # 1st page
+        result = models.Item.query \
+            .filter(or_(models.Item.seller_id == user.id, models.Item.buyer_id == user.id), models.Item.status.in_([
+            models.ItemStatus.on_sale,
+            models.ItemStatus.trading,
+            models.ItemStatus.sold_out,
+            models.ItemStatus.cancel,
+            models.ItemStatus.stop])) \
+            .order_by(models.Item.created_at.desc()) \
+            .order_by(models.Item.id.desc()) \
+            .limit(Constants.ITEMS_PER_PAGE + 1)
+    items = []
+    for row in result:
+        row.seller = get_user_by_id(row.seller_id).for_simple_json()
+        row.category = get_category_by_id(row.category_id).for_json()
+        row.image_url = utils.get_image_url(row.image_name)
 
-        try:
-
-            if item_id > 0 and created_at > 0:
-                sql = "SELECT * FROM `items` WHERE (`seller_id` = %s OR `buyer_id` = %s) AND `status` IN (%s,%s,%s,%s,%s) AND (`created_at` < %s OR (`created_at` <= %s AND `id` < %s)) ORDER BY `created_at` DESC, `id` DESC LIMIT %s"
-                c.execute(sql, (
-                    user['id'],
-                    user['id'],
-                    Constants.ITEM_STATUS_ON_SALE,
-                    Constants.ITEM_STATUS_TRADING,
-                    Constants.ITEM_STATUS_SOLD_OUT,
-                    Constants.ITEM_STATUS_CANCEL,
-                    Constants.ITEM_STATUS_STOP,
-                    datetime.datetime.fromtimestamp(created_at),
-                    datetime.datetime.fromtimestamp(created_at),
-                    item_id,
-                    Constants.TRANSACTIONS_PER_PAGE + 1,
-                ))
-
-            else:
-                sql = "SELECT * FROM `items` WHERE (`seller_id` = %s OR `buyer_id` = %s ) AND `status` IN (%s,%s,%s,%s,%s) ORDER BY `created_at` DESC, `id` DESC LIMIT %s"
-                c.execute(sql, [
-                    user['id'],
-                    user['id'],
-                    Constants.ITEM_STATUS_ON_SALE,
-                    Constants.ITEM_STATUS_TRADING,
-                    Constants.ITEM_STATUS_SOLD_OUT,
-                    Constants.ITEM_STATUS_CANCEL,
-                    Constants.ITEM_STATUS_STOP,
-                    Constants.TRANSACTIONS_PER_PAGE + 1,
-                ])
-
-            item_details = []
-            while True:
-                item = c.fetchone()
-
-                if item is None:
-                    break
-
-                seller = get_user_simple_by_id(item["seller_id"])
-                category = get_category_by_id(item["category_id"])
-
-                item["category"] = category
-                item["seller"] = to_user_json(seller)
-                item["image_url"] = utils.get_image_url(item["image_name"])
-                item = to_item_json(item, simple=False)
-
-                item_details.append(item)
-
-                with conn.cursor() as c2:
-                    sql = "SELECT * FROM `transaction_evidences` WHERE `item_id` = %s"
-                    c2.execute(sql, [item['id']])
-                    transaction_evidence = c2.fetchone()
-
-
-                    if transaction_evidence:
-                        sql = "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = %s"
-                        c2.execute(sql, [transaction_evidence["id"]])
-                        shipping = c2.fetchone()
-                        if not shipping:
-                            http_json_error(requests.codes['not_found'], "shipping not found")
-
-                        ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping["reserve_id"]})
-                        item["transaction_evidence_id"] = transaction_evidence["id"]
-                        item["transaction_evidence_status"] = transaction_evidence["status"]
-                        item["shipping_status"] = ssr["status"]
-
-        except pymysql.Error as err:
-            app.logger.exception(err)
-            http_json_error(requests.codes['internal_server_error'], "db error")
+        transaction_evidence = models.TransactionEvidences.query.filter(
+            models.TransactionEvidences.item_id == row.id).one()
+        if transaction_evidence is not None:
+            shipping = models.Shipping.query.get(transaction_evidence.id)
+            if not shipping:
+                raise HttpException(requests.codes.not_found, "shipping not found")
+            ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
+            row.transaction_evidence_id = transaction_evidence.id
+            row.transaction_evidence_status = transaction_evidence.status
+            row.shipping_status = ssr["status"]
+        items.append(row)
 
     has_next = False
-    if len(item_details) > Constants.TRANSACTIONS_PER_PAGE:
+    if len(items) > Constants.TRANSACTIONS_PER_PAGE:
         has_next = True
-        item_details = item_details[:Constants.TRANSACTIONS_PER_PAGE]
+        items = items[:Constants.TRANSACTIONS_PER_PAGE]
 
     return flask.jsonify(dict(
-        items=item_details,
+        items=[i.for_detail_json() for i in items],
         has_next=has_next,
     ))
 
 
 @app.route("/users/<user_id>.json", methods=["GET"])
 def get_user_items(user_id=None):
-    user = get_user_simple_by_id(user_id)
-    conn = dbh()
+    user = get_user_by_id(user_id)
 
     item_id = 0
     created_at = 0
@@ -541,65 +374,55 @@ def get_user_items(user_id=None):
             http_json_error(requests.codes['bad_request'], "item_id param error")
         item_id = int(item_id_str)
 
-    created_at_str = flask.request.args.get('created_at')
+    created_at_str = flask.request.args.get('created_at', 0)
     if created_at_str:
         if not created_at_str.isdecimal() or int(created_at_str) < 0:
             http_json_error(requests.codes['bad_request'], "created_at param error")
         created_at = int(created_at_str)
 
-    with conn.cursor() as c:
-        try:
-            if item_id > 0 and created_at > 0:
-                sql = "SELECT * FROM `items` WHERE `seller_id` = %s AND `status` IN (%s,%s,%s) AND (`created_at` < %s OR (`created_at` <= %s AND `id` < %s)) ORDER BY `created_at` DESC, `id` DESC LIMIT %s"
-                c.execute(sql, (
-                    user['id'],
-                    Constants.ITEM_STATUS_ON_SALE,
-                    Constants.ITEM_STATUS_TRADING,
-                    Constants.ITEM_STATUS_SOLD_OUT,
-                    datetime.datetime.fromtimestamp(created_at),
-                    datetime.datetime.fromtimestamp(created_at),
-                    item_id,
-                    Constants.ITEMS_PER_PAGE + 1,
-                ))
-
-            else:
-                sql = "SELECT * FROM `items` WHERE `seller_id` = %s AND `status` IN (%s,%s,%s) ORDER BY `created_at` DESC, `id` DESC LIMIT %s"
-                c.execute(sql, (
-                    user['id'],
-                    Constants.ITEM_STATUS_ON_SALE,
-                    Constants.ITEM_STATUS_TRADING,
-                    Constants.ITEM_STATUS_SOLD_OUT,
-                    Constants.ITEMS_PER_PAGE + 1,
-                ))
-
-            item_simples = []
-            while True:
-                item = c.fetchone()
-
-                if item is None:
-                    break
-
-                seller = get_user_simple_by_id(item["seller_id"])
-                category = get_category_by_id(item["category_id"])
-
-                item["category"] = category
-                item["seller"] = to_user_json(seller)
-                item["image_url"] = utils.get_image_url(item["image_name"])
-                item = to_item_json(item, simple=True)
-                item_simples.append(item)
-
-        except pymysql.Error as err:
-            app.logger.exception(err)
-            http_json_error(requests.codes['internal_server_error'], "db error")
+    if item_id > 0 and created_at > 0:
+        # paging
+        result = models.Item.query \
+            .filter(models.Item.seller_id == user.id, models.Item.status.in_([
+            models.ItemStatus.on_sale,
+            models.ItemStatus.trading,
+            models.ItemStatus.sold_out])) \
+            .filter(
+            or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at),
+                and_(models.Item.created_at <= datetime.datetime.fromtimestamp(created_at),
+                     models.Item.created_at < item_id))) \
+            .order_by(models.Item.created_at.desc()) \
+            .order_by(models.Item.id.desc()) \
+            .limit(Constants.ITEMS_PER_PAGE + 1)
+    else:
+        # 1st page
+        # SELECT items.id AS items_id, items.seller_id AS items_seller_id, items.buyer_id AS items_buyer_id, items.status AS items_status, items.name AS items_name, items.price AS items_price, items.description AS items_description, items.image_name AS items_image_name, items.category_id AS items_category_id, items.created_at AS items_created_at, items.updated_at AS items_updated_at
+        # FROM items
+        # WHERE items.seller_id = %(seller_id_1)s AND items.status IN (%(status_1)s, %(status_2)s, %(status_3)s) ORDER BY items.created_at DESC, items.id DESC
+        # LIMIT %(param_1)s
+        result = models.Item.query \
+            .filter(models.Item.seller_id == user.id, models.Item.status.in_([
+            models.ItemStatus.on_sale,
+            models.ItemStatus.trading,
+            models.ItemStatus.sold_out])) \
+            .order_by(models.Item.created_at.desc()) \
+            .order_by(models.Item.id.desc()) \
+            .limit(Constants.ITEMS_PER_PAGE + 1)
+    items = []
+    for row in result:
+        row.seller = get_user_by_id(row.seller_id).for_simple_json()
+        row.category = get_category_by_id(row.category_id)
+        row["image_url"] = utils.get_image_url(row.image_name)
+        items.append(row)
 
     has_next = False
-    if len(item_simples) > Constants.ITEMS_PER_PAGE:
+    if len(items) > Constants.ITEMS_PER_PAGE:
         has_next = True
-        item_simples = item_simples[:Constants.ITEMS_PER_PAGE]
+        items = items[:Constants.ITEMS_PER_PAGE]
 
     return flask.jsonify(dict(
-        user=to_user_json(user),
-        items=item_simples,
+        user=user.for_simple_json(),
+        items=[i.for_simple_json() for i in items],
         has_next=has_next,
     ))
 
@@ -607,56 +430,39 @@ def get_user_items(user_id=None):
 @app.route("/items/<item_id>.json", methods=["GET"])
 def get_item(item_id=None):
     user = get_user()
-    conn = dbh()
 
-    with conn.cursor() as c:
-        try:
-            sql = "SELECT * FROM `items` WHERE `id` = %s"
-            c.execute(sql, (item_id,))
-            item = c.fetchone()
-            if item is None:
-                http_json_error(requests.codes['not_found'], "item not found")
+    item = models.Item.query.get(item_id)
+    if item is None:
+        http_json_error(requests.codes['not_found'], "item not found")
 
-            seller = get_user_simple_by_id(item["seller_id"])
-            category = get_category_by_id(item["category_id"])
+    seller = models.User.query.get(item.seller_id)
+    category = get_category_by_id(item.category_id)
 
-            item["category"] = category
-            item["seller"] = to_user_json(seller)
-            item["image_url"] = utils.get_image_url(item["image_name"])
-            item = to_item_json(item, simple=False)
+    item.category = category.for_json()
+    item.seller = seller.for_json()
+    item.image_url = utils.get_image_url(item.image_name)
 
-            if (user["id"] == item["seller_id"] or user["id"] == item["buyer_id"]) and item["buyer_id"]:
-                buyer = get_user_simple_by_id(item["buyer_id"])
+    if (user.id == item.seller_id or user.id == item.buyer_id) and item.buyer_id != 0:
+        buyer = get_user_by_id(item.buyer_id)
 
-                item["buyer"] = to_user_json(buyer)
-                item["buyer_id"] = buyer["id"]
+        item.buyer = buyer.for_simple_json()
+        item.buyer_id = buyer.id
 
-                sql = "SELECT * FROM `transaction_evidences` WHERE `item_id` = %s"
-                c.execute(sql, (item['id'],))
-                transaction_evidence = c.fetchone()
-                # if not transaction_evidence:
-                #     http_json_error(requests.codes['not_found'], "transaction_evidence not found")
+        transaction_evidence = models.TransactionEvidences.query.filter(item_id=item.id).one()
+        item.transaction_evidence_id = transaction_evidence.id
+        item.transaction_evidence_status = transaction_evidence.status
 
+        shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one()
+        if not shipping:
+            http_json_error(requests.codes['not_found'], "shipping not found")
 
-                sql = "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = %s"
-                c.execute(sql, (transaction_evidence["id"],))
-                shipping = c.fetchone()
-                if not shipping:
-                    http_json_error(requests.codes['not_found'], "shipping not found")
+        ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
+        item.shipping_status = ssr["status"]
+    else:
+        item.buyer = {}
+        item.buyer_id = 0
 
-                ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping["reserve_id"]})
-                item["transaction_evidence_id"] = transaction_evidence["id"]
-                item["transaction_evidence_status"] = transaction_evidence["status"]
-                item["shipping_status"] = ssr["status"]
-            else:
-                item["buyer"] = {}
-                item["buyer_id"] = 0
-
-        except pymysql.Error as err:
-            app.logger.exception(err)
-            http_json_error(requests.codes['internal_server_error'], "db error")
-
-    return flask.jsonify(item)
+    return flask.jsonify(item.for_detail_json())
 
 
 @app.route("/items/edit", methods=["POST"])
@@ -669,49 +475,25 @@ def post_item_edit():
     if not 100 <= price <= 1000000:
         http_json_error(requests.codes['bad_request'], "商品価格は100ｲｽｺｲﾝ以上、1,000,000ｲｽｺｲﾝ以下にしてください")
     user = get_user()
-    conn = dbh()
-    with conn.cursor() as c:
-        try:
-            sql = "SELECT * FROM `items` WHERE `id` = %s"
-            c.execute(sql, (item_id,))
-            item = c.fetchone()
-            if item is None:
-                http_json_error(requests.codes['not_found'], "item not found")
-            if item["seller_id"] != user["id"]:
-                http_json_error(requests.codes['forbidden'], "自分の商品以外は編集できません")
-        except pymysql.Error as err:
-            app.logger.exception(err)
-            http_json_error(requests.codes['internal_server_error'], "db error")
 
-    conn.begin()
-    with conn.cursor() as c:
-        try:
-            sql = "SELECT * FROM `items` WHERE `id` = %s FOR UPDATE"
-            c.execute(sql, (flask.request.json["item_id"],))
-            item = c.fetchone()
-            if item["status"] != Constants.ITEM_STATUS_ON_SALE:
-                conn.rollback()
-                http_json_error(requests.codes['forbidden'], "販売中の商品以外編集できません")
-            sql = "UPDATE `items` SET `price` = %s, `updated_at` = %s WHERE `id` = %s"
-            c.execute(sql, (
-                flask.request.json["item_price"],
-                datetime.datetime.now(),
-                flask.request.json["item_id"]
-            ))
+    item = models.Item.query.get(item_id).with_for_update()
+    if item is None:
+        http_json_error(requests.codes['not_found'], "item not found")
+    if item.seller_id != user.id:
+        http_json_error(requests.codes['forbidden'], "自分の商品以外は編集できません")
+    if item.status != models.ItemStatus.on_sale:
+        http_json_error(requests.codes['forbidden'], "販売中の商品以外編集できません")
+    item.price = flask.request.json["item_price"]
+    item.updated_at = datetime.datetime.now()
 
-            sql = "SELECT * FROM `items` WHERE `id` = %s"
-            c.execute(sql, (flask.request.json["item_id"],))
-            item = c.fetchone()
-            conn.commit()
-        except pymysql.Error as err:
-            conn.rollback()
-            app.logger.exception(err)
-            http_json_error(requests.codes['internal_server_error'], "db error")
+    database.db.session.update(item)
+    database.db.session.commit()
+
     return flask.jsonify(dict(
-        item_id=item["id"],
-        item_price=item["price"],
-        item_created_at=int(item["created_at"].timestamp()),
-        item_updated_at=int(item["updated_at"].timestamp()),
+        item_id=item.id,
+        item_price=item.price,
+        item_created_at=int(item.created_at.timestamp()),
+        item_updated_at=int(item.updated_at.timestamp()),
     ))
 
 
@@ -720,118 +502,91 @@ def post_buy():
     ensure_valid_csrf_token()
     buyer = get_user()
 
-    conn = dbh()
+    target_item = models.Item.query.get(flask.request.json['item_id']).with_for_update()
+    if target_item is None:
+        http_json_error(requests.codes['not_found'], "item not found")
+    if target_item['status'] != models.ItemStatus.on_sale:
+        http_json_error(requests.codes['forbidden'], "item is not for sale")
+    if target_item['seller_id'] == buyer['id']:
+        http_json_error(requests.codes['forbidden'], "自分の商品は買えません")
+
+    seller = models.User.query.get(target_item['seller_id']).with_for_update()
+    if seller is None:
+        http_json_error(requests.codes['not_found'], "seller not found")
+    category = get_category_by_id(target_item['category_id'])
+
+    transaction_evidence = models.TransactionEvidences(
+        seller_id=seller.id,
+        buyer_id=buyer.id,
+        status=models.TransactionEvidenceStatus.wait_shipping,
+        item_id=target_item.id,
+        item_name=target_item.name,
+        item_price=target_item.price,
+        item_description=target_item.description,
+        item_category_id=category.id,
+        item_root_category_id=category.parent_id,
+    )
+    database.db.session.add(transaction_evidence)
+    target_item.buyer_id = buyer.id
+    target_item.status = models.ItemStatus.trading
+    target_item.updated_at = datetime.datetime.now()
+    database.db.session.update(target_item)
+
+    host = get_shipment_service_url()
     try:
-        conn.begin()
-        with conn.cursor() as c:
-            sql = "SELECT * FROM `items` WHERE `id` = %s FOR UPDATE"
-            c.execute(sql, (flask.request.json['item_id'],))
-            target_item = c.fetchone()
-            if target_item is None:
-                conn.rollback()
-                http_json_error(requests.codes['not_found'], "item not found")
-            if target_item['status'] != Constants.ITEM_STATUS_ON_SALE:
-                conn.rollback()
-                http_json_error(requests.codes['forbidden'], "item is not for sale")
-            if target_item['seller_id'] == buyer['id']:
-                conn.rollback()
-                http_json_error(requests.codes['forbidden'], "自分の商品は買えません")
-            sql = "SELECT * FROM `users` WHERE `id` = %s FOR UPDATE"
-            c.execute(sql, (target_item['seller_id'],))
-            seller = c.fetchone()
-            if seller is None:
-                conn.rollback()
-                http_json_error(requests.codes['not_found'], "seller not found")
-            category = get_category_by_id(target_item['category_id'])
-            # TODO: check category error
-            sql = "INSERT INTO `transaction_evidences` (`seller_id`, `buyer_id`, `status`, `item_id`, `item_name`, " \
-                  "`item_price`, `item_description`, `item_category_id`, `item_root_category_id`) " \
-                  "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
-            c.execute(sql, (
-                target_item['seller_id'],
-                buyer['id'],
-                Constants.TRANSACTION_EVIDENCE_STATUS_WAIT_SHIPPING,
-                target_item['id'],
-                target_item['name'],
-                target_item['price'],
-                target_item['description'],
-                category['id'],
-                category['parent_id'],
-            ))
-            transaction_evidence_id = c.lastrowid
-            sql = "UPDATE `items` SET `buyer_id` = %s, `status` = %s, `updated_at` = %s WHERE `id` = %s"
-            c.execute(sql, (
-                buyer['id'],
-                Constants.ITEM_STATUS_TRADING,
-                datetime.datetime.now(),
-                target_item['id'],
-            ))
+        res = requests.post(host + "/create",
+                            headers=dict(Authorization=Constants.ISUCARI_API_TOKEN),
+                            json=dict(
+                                to_address=buyer['address'],
+                                to_name=buyer['account_name'],
+                                from_address=seller['address'],
+                                from_name=seller['account_name'],
+                            ))
+        res.raise_for_status()
+        shipping_res = res.json()
+    except (socket.gaierror, requests.HTTPError) as er:
+        app.logger.exception(er)
+        http_json_error(requests.codes['internal_server_error'])
 
-            host = get_shipment_service_url()
-            try:
-                res = requests.post(host + "/create",
-                                    headers=dict(Authorization=Constants.ISUCARI_API_TOKEN),
-                                    json=dict(
-                                        to_address=buyer['address'],
-                                        to_name=buyer['account_name'],
-                                        from_address=seller['address'],
-                                            from_name=seller['account_name'],
-                                    ))
-                res.raise_for_status()
-            except (socket.gaierror, requests.HTTPError) as err:
-                conn.rollback()
-                app.logger.exception(err)
-                http_json_error(requests.codes['internal_server_error'])
+    host = get_payment_service_url()
+    try:
+        res = requests.post(host + "/token",
+                            json=dict(
+                                shop_id=Constants.PAYMENT_SERVICE_ISUCARI_SHOP_ID,
+                                api_key=Constants.PAYMENT_SERVICE_ISUCARI_API_KEY,
+                                token=flask.request.json['token'],
+                                price=target_item['price'],
+                            ))
+        res.raise_for_status()
+        payment_res = res.json()
+        if payment_res['status'] == "invalid":
+            http_json_error(requests.codes["bad_request"], "カード情報に誤りがあります")
+        if payment_res['status'] == "fail":
+            http_json_error(requests.codes["bad_request"], "カードの残高が足りません")
+        if payment_res['status'] != "ok":
+            http_json_error(requests.codes["bad_request"], "想定外のエラー")
+    except (socket.gaierror, requests.HTTPError) as er:
+        app.logger.exception(er)
+        http_json_error(requests.codes['internal_server_error'])
 
-            shipping_res = res.json()
+    shipping = models.Shipping(
+        transaction_evidence_id=transaction_evidence.id,
+        status=models.ShippingStatus.initial,
+        item_name=target_item.name,
+        item_id=target_item.id,
+        reserve_id=shipping_res["reserve_id"],
+        reserve_time=shipping_res["reserve_time"],
+        to_address=buyer.address,
+        to_name=buyer.name,
+        from_address=seller.address,
+        from_name=seller.name,
+        img_binary=""
+    )
+    database.db.session.add(shipping)
 
-            host = get_payment_service_url()
-            try:
-                res = requests.post(host + "/token",
-                                    json=dict(
-                                        shop_id=Constants.PAYMENT_SERVICE_ISUCARI_SHOP_ID,
-                                        api_key=Constants.PAYMENT_SERVICE_ISUCARI_API_KEY,
-                                        token=flask.request.json['token'],
-                                        price=target_item['price'],
-                                    ))
-                res.raise_for_status()
-            except (socket.gaierror, requests.HTTPError) as err:
-                conn.rollback()
-                app.logger.exception(err)
-                http_json_error(requests.codes['internal_server_error'])
+    database.db.session.commit()
 
-            payment_res = res.json()
-            if payment_res['status'] == "invalid":
-                conn.rollback()
-                http_json_error(requests.codes["bad_request"], "カード情報に誤りがあります")
-            if payment_res['status'] == "fail":
-                conn.rollback()
-                http_json_error(requests.codes["bad_request"], "カードの残高が足りません")
-            if payment_res['status'] != "ok":
-                conn.rollback()
-                http_json_error(requests.codes["bad_request"], "想定外のエラー")
-
-            sql = "INSERT INTO `shippings` (`transaction_evidence_id`, `status`, `item_name`, `item_id`, " \
-                  "`reserve_id`, `reserve_time`, `to_address`, `to_name`, `from_address`, `from_name`, `img_binary`) " \
-                  "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-            c.execute(sql, (
-                transaction_evidence_id,
-                Constants.SHIPPING_STATUS_INITIAL,
-                target_item["name"],
-                target_item["id"],
-                shipping_res["reserve_id"],
-                shipping_res["reserve_time"],
-                buyer["address"],
-                buyer["account_name"],
-                seller["address"],
-                seller["account_name"],
-                ""
-            ))
-        conn.commit()
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], "db error")
-    return flask.jsonify(dict(transaction_evidence_id=transaction_evidence_id))
+    return flask.jsonify(dict(transaction_evidence_id=transaction_evidence.id))
 
 
 @app.route("/sell", methods=["POST"])
@@ -863,42 +618,26 @@ def post_sell():
     imagename = "{0}{1}".format(utils.random_string(32), ext)
     file.save(os.path.join(app.config['UPLOAD_FOLDER'], imagename))
 
-    try:
-        conn = dbh()
-        conn.begin()
-        sql = "SELECT * FROM `users` WHERE `id` = %s FOR UPDATE"
-        with conn.cursor() as c:
-            c.execute(sql, (user['id'],))
-            seller = c.fetchone()
-            if seller is None:
-                conn.rollback()
-                http_json_error(requests['not_found'], 'user not found')
-            sql = """INSERT INTO `items`
-            (`seller_id`, `status`, `name`, `price`, `description`, `image_name`, `category_id`)
-             VALUES (%s, %s, %s, %s, %s, %s, %s)"""
-            c.execute(sql, (
-                seller['id'],
-                Constants.ITEM_STATUS_ON_SALE,
-                flask.request.form['name'],
-                flask.request.form['price'],
-                flask.request.form['description'],
-                imagename,
-                flask.request.form['category_id'],
-            ))
-            item_id = c.lastrowid
-            sql = "UPDATE `users` SET `num_sell_items`=%s, `last_bump`=%s WHERE `id`=%s"
-            c.execute(sql, (
-                seller['num_sell_items'] + 1,
-                datetime.datetime.now(),
-                seller['id'],
-            ))
-            conn.commit()
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], "db error")
+    seller = models.User.query.get(user.id).with_for_update()
+    if seller is None:
+        http_json_error(requests['not_found'], 'user not found')
+    item = models.Item(
+        seller_id=seller.id,
+        status=models.ItemStatus.on_sale,
+        name=flask.request.form['name'],
+        price=price,
+        description=flask.request.form['description'],
+        image_name=imagename,
+        category_id=flask.request.form['category_id'],
+    )
+    database.db.session.add(item)
+    seller.num_sell_items = seller.num_sell_items + 1
+    seller.last_bump = datetime.datetime.now()
+    database.db.session.update(seller)
+    database.db.session.commit()
 
     return flask.jsonify({
-        'id': item_id,
+        'id': item.id,
     })
 
 
@@ -906,75 +645,46 @@ def post_sell():
 def post_ship():
     ensure_valid_csrf_token()
     user = get_user()
-    conn = dbh()
-    with conn.cursor() as c:
-        try:
-            sql = "SELECT * FROM `transaction_evidences` WHERE `item_id` = %s"
-            c.execute(sql, (flask.request.json["item_id"],))
-            transaction_evidence = c.fetchone()
-            if transaction_evidence is None:
-                http_json_error(requests.codes["not_found"], "transaction_evidences not found")
-        except pymysql.Error as err:
-            app.logger.exception(err)
-            http_json_error(requests.codes['internal_server_error'], "db error")
-    if transaction_evidence["seller_id"] != user["id"]:
+
+    transaction_evidence = models.TransactionEvidences.query.filter(item_id=flask.request.json["item_id"]).one()
+    if transaction_evidence is None:
+        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+    if transaction_evidence.seller_id != user.id:
         http_json_error(requests.codes['forbidden'], "権限がありません")
 
+    item = models.Item.query.get(flask.request.json["item_id"]).with_for_update()
+    if item is None:
+        http_json_error(requests.codes["not_found"], "item not found")
+    if item.status != models.ItemStatus.trading:
+        http_json_error(requests.codes["forbidden"], "商品が取引中ではありません")
+    transaction_evidence = models.TransactionEvidences.query.get(transaction_evidence.id).with_for_update()
+    if transaction_evidence is None:
+        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+    if transaction_evidence.status != models.TransactionEvidenceStatus.wait_shipping:
+        http_json_error(requests.codes['forbidden'], "準備ができていません")
+
+    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one().with_for_update()
+    if shipping is None:
+        http_json_error(requests.codes["not_found"], "shipping not found")
     try:
-        conn.begin()
-        with conn.cursor() as c:
-            sql = "SELECT * FROM `items` WHERE `id` = %s FOR UPDATE"
-            c.execute(sql, (flask.request.json["item_id"],))
-            item = c.fetchone()
-            if item is None:
-                conn.rollback()
-                http_json_error(requests.codes["not_found"], "item not found")
-            if item["status"] != Constants.ITEM_STATUS_TRADING:
-                conn.rollback()
-                http_json_error(requests.codes["forbidden"], "商品が取引中ではありません")
-
-            sql = "SELECT * FROM `transaction_evidences` WHERE `id` = %s FOR UPDATE"
-            c.execute(sql, (transaction_evidence["id"],))
-            transaction_evidence = c.fetchone()
-            if transaction_evidence is None:
-                conn.rollback()
-                http_json_error(requests.codes["not_found"], "transaction_evidences not found")
-            if transaction_evidence["status"] != Constants.TRANSACTION_EVIDENCE_STATUS_WAIT_SHIPPING:
-                conn.rollback()
-                http_json_error(requests.codes['forbidden'], "準備ができていません")
-
-            sql = "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = %s FOR UPDATE"
-            c.execute(sql, (transaction_evidence["id"],))
-            shipping = c.fetchone()
-            if shipping is None:
-                conn.rollback()
-                http_json_error(requests.codes["not_found"], "shipping not found")
-
-            try:
-                host = get_shipment_service_url()
-                res = requests.post(host + "/request",
-                                    headers=dict(Authorization=Constants.ISUCARI_API_TOKEN),
-                                    json=dict(reserve_id=shipping["reserve_id"]))
-                res.raise_for_status()
-            except (socket.gaierror, requests.HTTPError) as err:
-                conn.rollback()
-                app.logger.exception(err)
-                http_json_error(requests.codes["internal_server_error"], "failed to request to shipment service")
-
-            sql = "UPDATE `shippings` SET `status` = %s, `img_binary` = %s, `updated_at` = %s WHERE `transaction_evidence_id` = %s"
-            c.execute(sql, (
-                Constants.SHIPPING_STATUS_WAIT_PICKUP,
-                res.content,
-                datetime.datetime.now(),
-                transaction_evidence["id"],
-            ))
-        conn.commit()
-    except pymysql.Error as err:
+        host = get_shipment_service_url()
+        res = requests.post(host + "/request",
+                            headers=dict(Authorization=Constants.ISUCARI_API_TOKEN),
+                            json=dict(reserve_id=shipping["reserve_id"]))
+        res.raise_for_status()
+    except (socket.gaierror, requests.HTTPError) as err:
         app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], "db error")
+        http_json_error(requests.codes["internal_server_error"], "failed to request to shipment service")
+    shipping.status = models.ShippingStatus.wait_pickup
+    shipping.img_binary = res.content
+    shipping.updated_at = datetime.datetime.now()
+
+    database.db.session.update(shipping)
+    database.db.session.commit()
+
     return flask.jsonify(dict(
-        path="/transactions/{}.png".format(transaction_evidence["id"]),
-        reserve_id=shipping["reserve_id"],
+        path="/transactions/{}.png".format(transaction_evidence.id),
+        reserve_id=shipping.reserve_id,
     ))
 
 
@@ -982,158 +692,92 @@ def post_ship():
 def post_ship_done():
     ensure_valid_csrf_token()
     user = get_user()
-    conn = dbh()
-    with conn.cursor() as c:
-        try:
-            sql = "SELECT * FROM `transaction_evidences` WHERE `item_id` = %s"
-            c.execute(sql, [flask.request.json["item_id"]])
-            transaction_evidence = c.fetchone()
-            if transaction_evidence is None:
-                http_json_error(requests.codes["not_found"], "transaction_evidences not found")
-        except pymysql.Error as err:
-            app.logger.exception(err)
-            http_json_error(requests.codes['internal_server_error'], "db error")
-    if transaction_evidence["seller_id"] != user["id"]:
+
+    transaction_evidence = models.TransactionEvidenceStatus.query.filter(item_id=flask.request.json["item_id"]).one()
+    if transaction_evidence is None:
+        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+    if transaction_evidence.seller_id != user.id:
         http_json_error(requests.codes['forbidden'], "権限がありません")
 
-    try:
-        conn.begin()
-        with conn.cursor() as c:
-            sql = "SELECT * FROM `items` WHERE `id` = %s FOR UPDATE"
-            c.execute(sql, [flask.request.json["item_id"]])
-            item = c.fetchone()
-            if item is None:
-                conn.rollback()
-                http_json_error(requests.codes["not_found"], "item not found")
-            if item["status"] != Constants.ITEM_STATUS_TRADING:
-                conn.rollback()
-                http_json_error(requests.codes["forbidden"], "商品が取引中ではありません")
+    item = models.Item.query.get(flask.request.json["item_id"]).with_for_update()
+    if item is None:
+        http_json_error(requests.codes["not_found"], "item not found")
+    if item.status != models.ItemStatus.trading:
+        http_json_error(requests.codes["forbidden"], "商品が取引中ではありません")
 
-            sql = "SELECT * FROM `transaction_evidences` WHERE `id` = %s FOR UPDATE"
-            c.execute(sql, [transaction_evidence["id"]])
-            transaction_evidence = c.fetchone()
-            if transaction_evidence is None:
-                conn.rollback()
-                http_json_error(requests.codes["not_found"], "transaction_evidences not found")
-            if transaction_evidence["status"] != Constants.TRANSACTION_EVIDENCE_STATUS_WAIT_SHIPPING:
-                conn.rollback()
-                http_json_error(requests.codes['forbidden'], "準備ができていません")
+    transaction_evidence = models.TransactionEvidences.query.get(transaction_evidence.id).with_for_update()
+    if transaction_evidence is None:
+        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+    if transaction_evidence.status != models.TransactionEvidenceStatus.wait_shipping:
+        http_json_error(requests.codes['forbidden'], "準備ができていません")
 
-            sql = "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = %s FOR UPDATE"
-            c.execute(sql, [transaction_evidence["id"]])
-            shipping = c.fetchone()
-            if shipping is None:
-                conn.rollback()
-                http_json_error(requests.codes["not_found"], "shipping not found")
+    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one().with_for_update()
+    if shipping is None:
+        http_json_error(requests.codes["not_found"], "shipping not found")
 
-            ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping["reserve_id"]})
+    ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping["reserve_id"]})
 
-            if ssr["status"] not in (Constants.SHIPPING_STATUS_DONE, Constants.SHIPPING_STATUS_SHIPPING):
-                http_json_error(requests.codes["forbidden"], "shipment service側で配送中か配送完了になっていません")
+    if ssr["status"] not in [str(s) for s in (models.ShippingStatus.done, models.ShippingStatus.shipping)]:
+        http_json_error(requests.codes["forbidden"], "shipment service側で配送中か配送完了になっていません")
+    shipping.status = models.Shipping[ssr["status"]]
+    shipping.updated_at = datetime.datetime.now()
+    database.db.session.update(shipping)
 
-            sql = "UPDATE `shippings` SET `status` = %s, `updated_at` = %s WHERE `transaction_evidence_id` = %s"
-            c.execute(sql, (
-                ssr["status"],
-                datetime.datetime.now(),
-                transaction_evidence["id"],
-            ))
+    transaction_evidence.status = models.TransactionEvidenceStatus.wait_done
+    transaction_evidence.updated_at = datetime.datetime.now()
+    database.db.session.update(transaction_evidence)
 
-            sql = "UPDATE `transaction_evidences` SET `status` = %s, `updated_at` = %s WHERE `id` = %s"
-            c.execute(sql, (
-                Constants.TRANSACTION_EVIDENCE_STATUS_WAIT_DONE,
-                datetime.datetime.now(),
-                transaction_evidence["id"],
-            ))
+    database.db.session.commit()
 
-        conn.commit()
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], "db error")
-    return flask.jsonify(dict(transaction_evidence_id=transaction_evidence["id"]))
+    return flask.jsonify(dict(transaction_evidence_id=transaction_evidence.id))
 
 
 @app.route("/complete", methods=["POST"])
 def post_complete():
     ensure_valid_csrf_token()
     user = get_user()
-    conn = dbh()
-
     item_id = flask.request.json["item_id"]
 
-    with conn.cursor() as c:
-        try:
-            sql = "SELECT * FROM `transaction_evidences` WHERE `item_id` = %s"
-            c.execute(sql, (item_id,))
-            transaction_evidence = c.fetchone()
-            if transaction_evidence is None:
-                http_json_error(requests.codes["not_found"], "transaction_evidences not found")
-        except pymysql.Error as err:
-            app.logger.exception(err)
-            http_json_error(requests.codes['internal_server_error'], "db error")
-
-    if transaction_evidence["buyer_id"] != user["id"]:
+    transaction_evidence = models.TransactionEvidences.query.filter(item_id=item_id).one()
+    if transaction_evidence is None:
+        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+    if transaction_evidence.buyer_id != user.id:
         http_json_error(requests.codes['forbidden'], "権限がありません")
 
-    try:
-        conn.begin()
-        with conn.cursor() as c:
-            sql = "SELECT * FROM `items` WHERE `id` = %s FOR UPDATE"
-            c.execute(sql, (item_id,))
-            item = c.fetchone()
-            if item is None:
-                conn.rollback()
-                http_json_error(requests.codes["not_found"], "item not found")
-            if item["status"] != Constants.ITEM_STATUS_TRADING:
-                conn.rollback()
-                http_json_error(requests.codes["forbidden"], "商品が取引中ではありません")
+    item = models.Item.query.get(item_id).with_for_update()
+    if item is None:
+        http_json_error(requests.codes["not_found"], "item not found")
+    if item.status != models.ItemStatus.trading:
+        http_json_error(requests.codes["forbidden"], "商品が取引中ではありません")
 
-            sql = "SELECT * FROM `transaction_evidences` WHERE `item_id` = %s FOR UPDATE"
-            c.execute(sql, (item_id,))
-            transaction_evidence = c.fetchone()
-            if transaction_evidence is None:
-                conn.rollback()
-                http_json_error(requests.codes["not_found"], "transaction_evidences not found")
-            if transaction_evidence["status"] != Constants.TRANSACTION_EVIDENCE_STATUS_WAIT_DONE:
-                conn.rollback()
-                http_json_error(requests.codes['forbidden'], "準備ができていません")
+    transaction_evidence = models.TransactionEvidences.query.filter(item_id=item_id).one().with_for_update()
+    if transaction_evidence is None:
+        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+    if transaction_evidence.status != models.TransactionEvidenceStatus.wait_done:
+        http_json_error(requests.codes['forbidden'], "準備ができていません")
 
-            sql = "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = %s FOR UPDATE"
-            c.execute(sql, [transaction_evidence["id"]])
-            shipping = c.fetchone()
+    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one().with_for_update()
+    if transaction_evidence["buyer_id"] != user.id:
+        http_json_error(requests.codes['forbidden'], "権限がありません")
+    ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
 
-            ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping["reserve_id"]})
+    if ssr["status"] != str(models.ShippingStatus.done):
+        http_json_error(requests.codes["bad_request"], "shipment service側で配送完了になっていません")
+    shipping.status = models.ShippingStatus.done
+    shipping.updated_at = datetime.datetime.now()
+    database.db.session.update(shipping)
 
-            if ssr["status"] != Constants.SHIPPING_STATUS_DONE:
-                conn.rollback()
-                http_json_error(requests.codes["bad_request"], "shipment service側で配送完了になっていません")
+    transaction_evidence.status = models.TransactionEvidenceStatus.done
+    transaction_evidence.updated_at = datetime.datetime.now()
+    database.db.session.update(transaction_evidence)
 
-            sql = "UPDATE `shippings` SET `status` = %s, `updated_at` = %s WHERE `transaction_evidence_id` = %s"
-            c.execute(sql, (
-                Constants.SHIPPING_STATUS_DONE,
-                datetime.datetime.now(),
-                transaction_evidence["id"],
-            ))
+    item.status = models.ItemStatus.sold_out
+    item.updated_at = datetime.datetime.now()
+    database.db.session.update(item)
 
+    database.db.session.commit()
 
-            sql = "UPDATE `transaction_evidences` SET `status` = %s, `updated_at` = %s WHERE `id` = %s"
-            c.execute(sql, (
-                Constants.TRANSACTION_EVIDENCE_STATUS_DONE,
-                datetime.datetime.now(),
-                transaction_evidence["id"],
-            ))
-
-            sql = "UPDATE `items` SET `status` = %s, `updated_at` = %s WHERE `id` = %s"
-            c.execute(sql, (
-                Constants.ITEM_STATUS_SOLD_OUT,
-                datetime.datetime.now(),
-                item["id"],
-            ))
-
-        conn.commit()
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], "db error")
-    return flask.jsonify(dict(transaction_evidence_id=transaction_evidence["id"]))
+    return flask.jsonify(dict(transaction_evidence_id=transaction_evidence.id))
 
 
 @app.route("/transactions/<transaction_evidence_id>.png", methods=["GET"])
@@ -1143,42 +787,24 @@ def get_qrcode(transaction_evidence_id):
             http_json_error(requests.codes['bad_request'], "incorrect transaction_evidence id")
 
     seller = get_user()
-    conn = dbh()
+    transaction_evidence = models.TransactionEvidences.query.get(transaction_evidence_id)
+    if transaction_evidence is None:
+        http_json_error(requests.codes['not_found'], "transaction_evidences not found")
+    if transaction_evidence.seller_id != seller.id:
+        http_json_error(requests.codes['forbidden'], "権限がありません")
+    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one()
+    if shipping is None:
+        http_json_error(requests.codes['not_found'], "shippings not found")
+    if shipping.status != str(models.ShippingStatus.wait_pickup) and \
+            shipping.status != str(models.ShippingStatus.shipping):
+        http_json_error(requests.codes['forbidden'], "qrcode not available")
+    if len(shipping.img_binary) == 0:
+        http_json_error(requests.codes['internal_server_error'], "empty qrcode image")
 
-    with conn.cursor() as c:
-        try:
-            sql = "SELECT * FROM `transaction_evidences` WHERE `id` = %s"
-            c.execute(sql, (transaction_evidence_id,))
-            transaction_evidence = c.fetchone()
-
-            if transaction_evidence is None:
-                http_json_error(requests.codes['not_found'], "transaction_evidences not found")
-
-            if transaction_evidence["seller_id"] != seller["id"]:
-                http_json_error(requests.codes['forbidden'], "権限がありません")
-
-            sql = "SELECT * FROM `shippings` WHERE `transaction_evidence_id` = %s"
-            c.execute(sql, (transaction_evidence["id"],))
-            shipping = c.fetchone()
-
-            if shipping is None:
-                http_json_error(requests.codes['not_found'], "shippings not found")
-
-            if shipping["status"] != Constants.SHIPPING_STATUS_WAIT_PICKUP and shipping["status"] != Constants.SHIPPING_STATUS_SHIPPING:
-                http_json_error(requests.codes['forbidden'], "qrcode not available")
-
-            if len(shipping["img_binary"]) == 0:
-                http_json_error(requests.codes['internal_server_error'], "empty qrcode image")
-
-        except pymysql.Error as err:
-            app.logger.exception(err)
-            http_json_error(requests.codes['internal_server_error'], "db error")
-
-    img_binary = shipping["img_binary"]
-    res = flask.make_response(img_binary)
+    res = flask.make_response(shipping.img_binary)
     res.headers.set('Content-Type', 'image/png')
 
-    return  res
+    return res
 
 
 @app.route("/bump", methods=["POST"])
@@ -1187,50 +813,34 @@ def post_bump():
     ensure_required_payload(['item_id'])
     user = get_user()
 
-    try:
-        conn = dbh()
-        conn.begin()
-        with conn.cursor() as c:
-            sql = "SELECT * FROM `items` WHERE `id` = %s FOR UPDATE"
-            c.execute(sql, (flask.request.json['item_id'],))
-            target_item = c.fetchone()
-            if target_item is None:
-                conn.rollback()
-                http_json_error(requests.codes['not_found'], "item not found")
-            if target_item['seller_id'] != user['id']:
-                conn.rollback()
-                http_json_error(requests.codes['forbidden'], "自分の商品以外は編集できません")
+    item = models.Item.query.get(flask.request.json['item_id']).with_for_update()
+    if item is None:
+        raise HttpException(requests.codes.not_found, "item not found")
+    if item.seller_id != user.id:
+        raise HttpException(requests.codes.forbidden, "自分の商品以外は編集できません")
+    seller = models.User.query.get(user.id).with_for_update()
+    if seller is None:
+        raise HttpException(requests.codes.not_found, "user not found")
 
-            sql = "SELECT * FROM `users` WHERE `id` = %s FOR UPDATE"
-            c.execute(sql, (user['id'],))
-            seller = c.fetchone()
-            if seller is None:
-                conn.rollback()
-                http_json_error(requests.codes['not_found'], "user not found")
-            now = datetime.datetime.now()
-            if seller['last_bump'] + datetime.timedelta(seconds=3) > now:
-                http_json_error(requests.codes['forbidden'], "Bump not allowed")
+    now = datetime.datetime.now()
+    if seller.last_bump + datetime.timedelta(seconds=Constants.BUMP_ALLOW_SECONDS) > now:
+        raise HttpException(requests.codes.forbidden, "Bump not allowed")
 
-            sql = "UPDATE `items` SET `created_at`=%s, `updated_at`=%s WHERE id=%s"
-            c.execute(sql, (now, now, target_item['id'],))
+    item.created_at = now
+    item.updated_at = now
+    database.db.session.update(item)
 
-            sql = "UPDATE `users` SET `last_bump`=%s WHERE id=%s"
-            c.execute(sql, (now, user['id'],))
+    seller.last_bump = now
+    database.db.session.update(seller)
 
-            sql = "SELECT * FROM `items` WHERE `id` = %s"
-            c.execute(sql, (target_item['id'],))
-            target_item = c.fetchone()
-
-        conn.commit()
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], "db error")
+    target_item = models.Item.query.get(item['id'])
+    database.db.session.commit()
 
     return flask.jsonify({
-        'item_id': target_item['id'],
-        'item_price': target_item['price'],
-        'item_created_at': int(target_item['created_at'].timestamp()),
-        'item_updated_at': int(target_item['updated_at'].timestamp()),
+        'item_id': target_item.id,
+        'item_price': target_item.price,
+        'item_created_at': int(target_item.created_at.timestamp()),
+        'item_updated_at': int(target_item.updated_at.timestamp()),
     })
 
 
@@ -1239,19 +849,10 @@ def get_settings():
     outputs = dict()
     user = get_user_or_none()
     if user is not None:
-        outputs['user'] = to_user_json(user)
+        outputs['user'] = user.for_json()
     outputs['csrf_token'] = flask.session.get('csrf_token', '')
-
-    try:
-        conn = dbh()
-        sql = "SELECT * FROM `categories`"
-        with conn.cursor() as c:
-            c.execute(sql)
-            categories = c.fetchall()
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], "db error")
-    outputs['categories'] = categories
+    categories = models.Category.query.all()
+    outputs['categories'] = [c.for_json() for c in categories]
     outputs['payment_service_url'] = get_payment_service_url()
 
     return flask.jsonify(outputs)
@@ -1260,24 +861,14 @@ def get_settings():
 @app.route("/login", methods=["POST"])
 def post_login():
     ensure_required_payload(['account_name', 'password'])
-    try:
-        conn = dbh()
-        sql = "SELECT * FROM `users` WHERE `account_name` = %s"
-        with conn.cursor() as c:
-            c.execute(sql, [flask.request.json['account_name']])
-            user = c.fetchone()
-
-            if user is None or \
-                    not bcrypt.checkpw(flask.request.json['password'].encode('utf-8'), user['hashed_password']):
-                http_json_error(requests.codes['unauthorized'], 'アカウント名かパスワードが間違えています')
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], 'db error')
-
-    flask.session['user_id'] = user['id']
+    user = models.User.query.filter_by(account_name=flask.request.json['account_name']).first()
+    if user is None or \
+            not bcrypt.checkpw(flask.request.json['password'].encode('utf-8'), user.hashed_password):
+        http_json_error(requests.codes['unauthorized'], 'アカウント名かパスワードが間違えています')
+    flask.session['user_id'] = user.id
     flask.session['csrf_token'] = utils.random_string(10)
     return flask.jsonify(
-        to_user_json(user),
+        user.for_json()
     )
 
 
@@ -1285,43 +876,28 @@ def post_login():
 def post_register():
     ensure_required_payload(['account_name', 'password', 'address'])
     hashedpw = bcrypt.hashpw(flask.request.json['password'].encode('utf-8'), bcrypt.gensalt(10))
+
     try:
-        conn = dbh()
-        with conn.cursor() as c:
-            sql = "INSERT INTO `users` (`account_name`, `hashed_password`, `address`) VALUES (%s, %s, %s)"
-            c.execute(sql, [flask.request.json['account_name'], hashedpw, flask.request.json['address']])
-        conn.commit()
-        user_id = c.lastrowid
-    except pymysql.Error as err:
+        user = models.User(account_name=flask.request.json['account_name'], hashed_password=hashedpw,
+                           address=flask.request.json['address'])
+        database.db.session.add(user)
+        database.db.session.commit()
+        flask.session['user_id'] = user.id
+        flask.session['csrf_token'] = utils.random_string(10)
+        return flask.jsonify({
+            'id': user.id,
+            'account_name': flask.request.json['account_name'],
+            'address': flask.request.json['address'],
+        })
+    except Exception as err:
         app.logger.exception(err)
         http_json_error(requests.codes['internal_server_error'], 'db error')
-
-    flask.session['user_id'] = user_id
-    flask.session['csrf_token'] = utils.random_string(10)
-    return flask.jsonify({
-        'id': user_id,
-        'account_name': flask.request.json['account_name'],
-        'address': flask.request.json['address'],
-    })
 
 
 @app.route("/reports.json", methods=["GET"])
 def get_reports():
-    try:
-        conn = dbh()
-        conn.begin()
-        with conn.cursor() as c:
-            sql = "SELECT * FROM `transaction_evidences` WHERE `id` > 15007"
-            c.execute(sql)
-            transaction_evidences = c.fetchall()
-
-            for k in transaction_evidences:
-                del k["created_at"]
-                del k["updated_at"]
-    except pymysql.Error as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], "db error")
-    return flask.jsonify(transaction_evidences)
+    transaction_evidences = models.TransactionEvidences.query.filter(models.TransactionEvidences.id > 15007).all()
+    return flask.jsonify([t.for_json() for t in transaction_evidences])
 
 
 # Frontend
@@ -1342,7 +918,6 @@ def get_index(*args, **kwargs):
     # if "user_id" in flask.session:
     #    return flask.redirect('/', 303)
     return flask.render_template('index.html')
-
 
 # Assets
 # @app.route("/*")
