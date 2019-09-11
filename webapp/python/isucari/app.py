@@ -16,7 +16,7 @@ static_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../p
 
 app = flask.Flask(__name__, static_folder=str(static_folder), static_url_path='', template_folder=static_folder)
 app.config['SECRET_KEY'] = 'isucari'
-app.config['UPLOAD_FOLDER'] = '../public/upload'
+app.config['UPLOAD_FOLDER'] = os.path.join(static_folder, 'upload')
 
 
 class Constants(object):
