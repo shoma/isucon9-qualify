@@ -2,8 +2,6 @@
 
 import socket
 import os
-import random
-import string
 import datetime
 import subprocess
 
@@ -11,6 +9,8 @@ import pymysql.cursors
 import flask
 import bcrypt
 import requests
+
+from . import utils
 
 static_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../public'))
 
@@ -87,11 +87,6 @@ def http_json_error(code, msg):
 @app.errorhandler(HttpException)
 def handle_http_exception(error):
     return error.get_response()
-
-
-def random_string(length):
-    letters = string.ascii_lowercase + string.digits
-    return ''.join(random.choice(letters) for _ in range(length))
 
 
 def get_user():
@@ -227,10 +222,6 @@ def api_shipment_status(shipment_url, params={}):
 
     return res.json()
 
-
-def get_image_url(image_name):
-    return "/upload/{}".format(image_name)
-
 # API
 @app.route("/initialize", methods=["POST"])
 def post_initialize():
@@ -323,7 +314,7 @@ def get_new_items():
 
                 item["category"] = category
                 item["seller"] = to_user_json(seller)
-                item["image_url"] = get_image_url(item["image_name"])
+                item["image_url"] = utils.get_image_url(item["image_name"])
                 item = to_item_json(item, simple=True)
 
                 item_simples.append(item)
@@ -411,7 +402,7 @@ def get_new_category_items(root_category_id=None):
 
                 item["category"] = category
                 item["seller"] = to_user_json(seller)
-                item["image_url"] = get_image_url(item["image_name"])
+                item["image_url"] = utils.get_image_url(item["image_name"])
                 item = to_item_json(item, simple=True)
 
                 item_simples.append(item)
@@ -498,7 +489,7 @@ def get_transactions():
 
                 item["category"] = category
                 item["seller"] = to_user_json(seller)
-                item["image_url"] = get_image_url(item["image_name"])
+                item["image_url"] = utils.get_image_url(item["image_name"])
                 item = to_item_json(item, simple=False)
 
                 item_details.append(item)
@@ -593,7 +584,7 @@ def get_user_items(user_id=None):
 
                 item["category"] = category
                 item["seller"] = to_user_json(seller)
-                item["image_url"] = get_image_url(item["image_name"])
+                item["image_url"] = utils.get_image_url(item["image_name"])
                 item = to_item_json(item, simple=True)
                 item_simples.append(item)
 
@@ -631,7 +622,7 @@ def get_item(item_id=None):
 
             item["category"] = category
             item["seller"] = to_user_json(seller)
-            item["image_url"] = get_image_url(item["image_name"])
+            item["image_url"] = utils.get_image_url(item["image_name"])
             item = to_item_json(item, simple=False)
 
             if (user["id"] == item["seller_id"] or user["id"] == item["buyer_id"]) and item["buyer_id"]:
@@ -869,7 +860,7 @@ def post_sell():
         http_json_error(requests.codes['bad_request'], 'unsupported image format error error')
     if ext == ".jpeg":
         ext = ".jpg"
-    imagename = "{0}{1}".format(random_string(32), ext)
+    imagename = "{0}{1}".format(utils.random_string(32), ext)
     file.save(os.path.join(app.config['UPLOAD_FOLDER'], imagename))
 
     try:
@@ -1284,7 +1275,7 @@ def post_login():
         http_json_error(requests.codes['internal_server_error'], 'db error')
 
     flask.session['user_id'] = user['id']
-    flask.session['csrf_token'] = random_string(10)
+    flask.session['csrf_token'] = utils.random_string(10)
     return flask.jsonify(
         to_user_json(user),
     )
@@ -1306,7 +1297,7 @@ def post_register():
         http_json_error(requests.codes['internal_server_error'], 'db error')
 
     flask.session['user_id'] = user_id
-    flask.session['csrf_token'] = random_string(10)
+    flask.session['csrf_token'] = utils.random_string(10)
     return flask.jsonify({
         'id': user_id,
         'account_name': flask.request.json['account_name'],
