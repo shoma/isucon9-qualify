@@ -63,7 +63,7 @@ def handle_http_exception(error):
     return error.get_response()
 
 
-def get_user():
+def get_current_user():
     user_id = flask.session.get("user_id")
     if user_id is None:
         http_json_error(requests.codes['not_found'], "no session")
@@ -92,28 +92,6 @@ def get_category_by_id(category_id):
         parent = models.Category.query.get(category.parent_id)
         category.parent_category_name = parent.category_name
     return category
-
-
-def to_user_json(user):
-    del (user['hashed_password'], user['last_bump'], user['created_at'])
-    return user
-
-
-def to_item_json(item, simple=False):
-    item["created_at"] = int(item["created_at"].timestamp())
-    item["updated_at"] = int(item["updated_at"].timestamp())
-
-    keys = (
-        "id", "seller_id", "seller", "buyer_id", "buyer", "status", "name", "price", "description",
-        "image_url", "category_id", "category", "transaction_evidence_id", "transaction_evidence_status",
-        "shipping_status", "created_at",
-    )
-
-    if simple:
-        keys = ("id", "seller_id", "seller", "status", "name", "price", "image_url",
-                "category_id", "category", "created_at")
-
-    return {k: v for k, v in item.items() if k in keys}
 
 
 def ensure_required_payload(keys=None):
@@ -288,7 +266,7 @@ def get_new_category_items(root_category_id=None):
 
 @app.route("/users/transactions.json", methods=["GET"])
 def get_transactions():
-    user = get_user()
+    user = get_current_user()
 
     item_id = 0
     created_at = 0
@@ -309,11 +287,11 @@ def get_transactions():
         # paging
         result = models.Item.query \
             .filter(or_(models.Item.seller_id == user.id, models.Item.buyer_id == user.id), models.Item.status.in_([
-            models.ItemStatus.on_sale,
-            models.ItemStatus.trading,
-            models.ItemStatus.sold_out,
-            models.ItemStatus.cancel,
-            models.ItemStatus.stop])) \
+                models.ItemStatus.on_sale,
+                models.ItemStatus.trading,
+                models.ItemStatus.sold_out,
+                models.ItemStatus.cancel,
+                models.ItemStatus.stop])) \
             .filter(or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at),
                         and_(models.Item.created_at <= datetime.datetime.fromtimestamp(created_at),
                              models.Item.created_at < item_id))) \
@@ -324,11 +302,11 @@ def get_transactions():
         # 1st page
         result = models.Item.query \
             .filter(or_(models.Item.seller_id == user.id, models.Item.buyer_id == user.id), models.Item.status.in_([
-            models.ItemStatus.on_sale,
-            models.ItemStatus.trading,
-            models.ItemStatus.sold_out,
-            models.ItemStatus.cancel,
-            models.ItemStatus.stop])) \
+                models.ItemStatus.on_sale,
+                models.ItemStatus.trading,
+                models.ItemStatus.sold_out,
+                models.ItemStatus.cancel,
+                models.ItemStatus.stop])) \
             .order_by(models.Item.created_at.desc()) \
             .order_by(models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
@@ -384,13 +362,13 @@ def get_user_items(user_id=None):
         # paging
         result = models.Item.query \
             .filter(models.Item.seller_id == user.id, models.Item.status.in_([
-            models.ItemStatus.on_sale,
-            models.ItemStatus.trading,
-            models.ItemStatus.sold_out])) \
+                models.ItemStatus.on_sale,
+                models.ItemStatus.trading,
+                models.ItemStatus.sold_out])) \
             .filter(
-            or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at),
-                and_(models.Item.created_at <= datetime.datetime.fromtimestamp(created_at),
-                     models.Item.created_at < item_id))) \
+                or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at),
+                    and_(models.Item.created_at <= datetime.datetime.fromtimestamp(created_at),
+                         models.Item.created_at < item_id))) \
             .order_by(models.Item.created_at.desc()) \
             .order_by(models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
@@ -402,9 +380,9 @@ def get_user_items(user_id=None):
         # LIMIT %(param_1)s
         result = models.Item.query \
             .filter(models.Item.seller_id == user.id, models.Item.status.in_([
-            models.ItemStatus.on_sale,
-            models.ItemStatus.trading,
-            models.ItemStatus.sold_out])) \
+                models.ItemStatus.on_sale,
+                models.ItemStatus.trading,
+                models.ItemStatus.sold_out])) \
             .order_by(models.Item.created_at.desc()) \
             .order_by(models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
@@ -429,7 +407,7 @@ def get_user_items(user_id=None):
 
 @app.route("/items/<item_id>.json", methods=["GET"])
 def get_item(item_id=None):
-    user = get_user()
+    user = get_current_user()
 
     item = models.Item.query.get(item_id)
     if item is None:
@@ -474,7 +452,7 @@ def post_item_edit():
     item_id = int(flask.request.json['item_id'])
     if not 100 <= price <= 1000000:
         http_json_error(requests.codes['bad_request'], "商品価格は100ｲｽｺｲﾝ以上、1,000,000ｲｽｺｲﾝ以下にしてください")
-    user = get_user()
+    user = get_current_user()
 
     item = models.Item.query.get(item_id).with_for_update()
     if item is None:
@@ -500,7 +478,7 @@ def post_item_edit():
 @app.route("/buy", methods=["POST"])
 def post_buy():
     ensure_valid_csrf_token()
-    buyer = get_user()
+    buyer = get_current_user()
 
     target_item = models.Item.query.get(flask.request.json['item_id']).with_for_update()
     if target_item is None:
@@ -604,7 +582,7 @@ def post_sell():
     category = get_category_by_id(flask.request.form['category_id'])
     if category['parent_id'] == 0:
         http_json_error(requests.codes['bad_request'], 'Incorrect category ID')
-    user = get_user()
+    user = get_current_user()
 
     if "image" not in flask.request.files:
         http_json_error(requests.codes['internal_server_error'], 'image error')
@@ -644,7 +622,7 @@ def post_sell():
 @app.route("/ship", methods=["POST"])
 def post_ship():
     ensure_valid_csrf_token()
-    user = get_user()
+    user = get_current_user()
 
     transaction_evidence = models.TransactionEvidences.query.filter(item_id=flask.request.json["item_id"]).one()
     if transaction_evidence is None:
@@ -691,7 +669,7 @@ def post_ship():
 @app.route("/ship_done", methods=["POST"])
 def post_ship_done():
     ensure_valid_csrf_token()
-    user = get_user()
+    user = get_current_user()
 
     transaction_evidence = models.TransactionEvidenceStatus.query.filter(item_id=flask.request.json["item_id"]).one()
     if transaction_evidence is None:
@@ -735,7 +713,7 @@ def post_ship_done():
 @app.route("/complete", methods=["POST"])
 def post_complete():
     ensure_valid_csrf_token()
-    user = get_user()
+    user = get_current_user()
     item_id = flask.request.json["item_id"]
 
     transaction_evidence = models.TransactionEvidences.query.filter(item_id=item_id).one()
@@ -786,7 +764,7 @@ def get_qrcode(transaction_evidence_id):
         if not transaction_evidence_id.isdecimal() or int(transaction_evidence_id) <= 0:
             http_json_error(requests.codes['bad_request'], "incorrect transaction_evidence id")
 
-    seller = get_user()
+    seller = get_current_user()
     transaction_evidence = models.TransactionEvidences.query.get(transaction_evidence_id)
     if transaction_evidence is None:
         http_json_error(requests.codes['not_found'], "transaction_evidences not found")
@@ -811,7 +789,7 @@ def get_qrcode(transaction_evidence_id):
 def post_bump():
     ensure_valid_csrf_token()
     ensure_required_payload(['item_id'])
-    user = get_user()
+    user = get_current_user()
 
     item = models.Item.query.get(flask.request.json['item_id']).with_for_update()
     if item is None:
