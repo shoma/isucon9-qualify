@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 
-import socket
 import os
 import datetime
 import subprocess
@@ -14,7 +13,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import (utils,
                database,
                models,
+               http_service,
                )
+from .config import Constants
 
 static_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../public'))
 
@@ -25,20 +26,6 @@ app.config['SQLALCHEMY_DATABASE_URI'] = database.get_dsn()
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
 
 database.init_db(app)
-
-
-class Constants(object):
-    DEFAULT_PAYMENT_SERVICE_URL = "http://127.0.0.1:5555"
-    DEFAULT_SHIPMENT_SERVICE_URL = "http://127.0.0.1:7000"
-
-    ISUCARI_API_TOKEN = 'Bearer 75ugk2m37a750fwir5xr-22l6h4wmue1bwrubzwd0'
-
-    PAYMENT_SERVICE_ISUCARI_API_KEY = 'a15400e46c83635eb181-946abb51ff26a868317c'
-    PAYMENT_SERVICE_ISUCARI_SHOP_ID = '11'
-
-    ITEMS_PER_PAGE = 48
-    TRANSACTIONS_PER_PAGE = 10
-    BUMP_ALLOW_SECONDS = 3
 
 
 class HttpException(Exception):
@@ -128,22 +115,6 @@ def get_shipment_service_url():
     return Constants.DEFAULT_SHIPMENT_SERVICE_URL if config is None else config.val
 
 
-def api_shipment_status(shipment_url, params=None):
-    if params is None:
-        params = {}
-    try:
-        res = requests.post(
-            shipment_url + "/status",
-            headers=dict(Authorization=Constants.ISUCARI_API_TOKEN),
-            json=params,
-        )
-        res.raise_for_status()
-        return res.json()
-    except (socket.gaierror, requests.HTTPError) as err:
-        app.logger.exception(err)
-        raise HttpException(requests.codes.internal_server_error, "")
-
-
 # API
 @app.route("/initialize", methods=["POST"])
 def post_initialize():
@@ -168,11 +139,11 @@ def post_initialize():
 
 @app.route("/new_items.json", methods=["GET"])
 def get_new_items():
-    item_id = flask.request.args.get('item_id',  default=0, type=int)
+    item_id = flask.request.args.get('item_id', default=0, type=int)
     if item_id < 0:
         raise HttpException(requests.codes.bad_request, "item_id param error")
 
-    created_at = flask.request.args.get('created_at',  default=0, type=int)
+    created_at = flask.request.args.get('created_at', default=0, type=int)
     if created_at < 0:
         raise HttpException(requests.codes.bad_request, "created_at param error")
 
@@ -210,11 +181,11 @@ def get_new_items():
 
 @app.route("/new_items/<int:root_category_id>.json", methods=["GET"])
 def get_new_category_items(root_category_id=None):
-    item_id = flask.request.args.get('item_id',  default=0, type=int)
+    item_id = flask.request.args.get('item_id', default=0, type=int)
     if item_id < 0:
         raise HttpException(requests.codes.bad_request, "item_id param error")
 
-    created_at = flask.request.args.get('created_at',  default=0, type=int)
+    created_at = flask.request.args.get('created_at', default=0, type=int)
     if created_at < 0:
         raise HttpException(requests.codes.bad_request, "created_at param error")
 
@@ -261,11 +232,11 @@ def get_new_category_items(root_category_id=None):
 def get_transactions():
     user = get_current_user()
 
-    item_id = flask.request.args.get('item_id',  default=0, type=int)
+    item_id = flask.request.args.get('item_id', default=0, type=int)
     if item_id < 0:
         raise HttpException(requests.codes.bad_request, "item_id param error")
 
-    created_at = flask.request.args.get('created_at',  default=0, type=int)
+    created_at = flask.request.args.get('created_at', default=0, type=int)
     if created_at < 0:
         raise HttpException(requests.codes.bad_request, "created_at param error")
 
@@ -308,7 +279,7 @@ def get_transactions():
             shipping = models.Shipping.query.get(transaction_evidence.id)
             if not shipping:
                 raise HttpException(requests.codes.not_found, "shipping not found")
-            ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
+            ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
             row.transaction_evidence_id = transaction_evidence.id
             row.transaction_evidence_status = transaction_evidence.status
             row.shipping_status = ssr["status"]
@@ -329,11 +300,11 @@ def get_transactions():
 def get_user_items(user_id=None):
     user = get_user_by_id(user_id)
 
-    item_id = flask.request.args.get('item_id',  default=0, type=int)
+    item_id = flask.request.args.get('item_id', default=0, type=int)
     if item_id < 0:
         raise HttpException(requests.codes.bad_request, "item_id param error")
 
-    created_at = flask.request.args.get('created_at',  default=0, type=int)
+    created_at = flask.request.args.get('created_at', default=0, type=int)
     if created_at < 0:
         raise HttpException(requests.codes.bad_request, "created_at param error")
 
@@ -413,7 +384,7 @@ def get_item(item_id=None):
         if not shipping:
             raise HttpException(requests.codes.not_found, "shipping not found")
 
-        ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
+        ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
         item.shipping_status = ssr["status"]
     else:
         item.buyer = {}
@@ -489,42 +460,21 @@ def post_buy():
     target_item.updated_at = datetime.datetime.now()
     database.db.session.update(target_item)
 
-    host = get_shipment_service_url()
-    try:
-        res = requests.post(host + "/create",
-                            headers=dict(Authorization=Constants.ISUCARI_API_TOKEN),
-                            json=dict(
-                                to_address=buyer['address'],
-                                to_name=buyer['account_name'],
-                                from_address=seller['address'],
-                                from_name=seller['account_name'],
-                            ))
-        res.raise_for_status()
-        shipping_res = res.json()
-    except (socket.gaierror, requests.HTTPError) as er:
-        app.logger.exception(er)
-        raise HttpException(requests.codes.internal_server_error, None)
+    shipping_res = http_service.Shipping.create(get_shipment_service_url(), dict(
+        to_address=buyer['address'],
+        to_name=buyer['account_name'],
+        from_address=seller['address'],
+        from_name=seller['account_name'],
+    ))
 
-    host = get_payment_service_url()
-    try:
-        res = requests.post(host + "/token",
-                            json=dict(
-                                shop_id=Constants.PAYMENT_SERVICE_ISUCARI_SHOP_ID,
-                                api_key=Constants.PAYMENT_SERVICE_ISUCARI_API_KEY,
-                                token=flask.request.json['token'],
-                                price=target_item['price'],
-                            ))
-        res.raise_for_status()
-        payment_res = res.json()
-        if payment_res['status'] == "invalid":
-            raise HttpException(requests.codes.bad_request, "カード情報に誤りがあります")
-        if payment_res['status'] == "fail":
-            raise HttpException(requests.codes.bad_request, "カードの残高が足りません")
-        if payment_res['status'] != "ok":
-            raise HttpException(requests.codes.bad_request, "想定外のエラー")
-    except (socket.gaierror, requests.HTTPError) as er:
-        app.logger.exception(er)
-        raise HttpException(requests.codes.internal_server_error)
+    payment_res = http_service.Payment.token(get_payment_service_url(),
+                                             dict(token=flask.request.json['token'], price=target_item.price))
+    if payment_res['status'] == "invalid":
+        raise HttpException(requests.codes.bad_request, "カード情報に誤りがあります")
+    if payment_res['status'] == "fail":
+        raise HttpException(requests.codes.bad_request, "カードの残高が足りません")
+    if payment_res['status'] != "ok":
+        raise HttpException(requests.codes.bad_request, "想定外のエラー")
 
     shipping = models.Shipping(
         transaction_evidence_id=transaction_evidence.id,
@@ -623,15 +573,12 @@ def post_ship():
     shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one().with_for_update()
     if shipping is None:
         raise HttpException(requests.codes.not_found, "shipping not found")
-    try:
-        host = get_shipment_service_url()
-        res = requests.post(host + "/request",
-                            headers=dict(Authorization=Constants.ISUCARI_API_TOKEN),
-                            json=dict(reserve_id=shipping["reserve_id"]))
-        res.raise_for_status()
-    except (socket.gaierror, requests.HTTPError) as err:
-        app.logger.exception(err)
-        raise HttpException(requests.codes.internal_server_error, "failed to request to shipment service")
+
+    host = get_shipment_service_url()
+    res = requests.post(host + "/request",
+                        headers=dict(Authorization=Constants.ISUCARI_API_TOKEN),
+                        json=dict(reserve_id=shipping["reserve_id"]))
+    res.raise_for_status()
     shipping.status = models.ShippingStatus.wait_pickup
     shipping.img_binary = res.content
     shipping.updated_at = datetime.datetime.now()
@@ -672,7 +619,7 @@ def post_ship_done():
     if shipping is None:
         raise HttpException(requests.codes.not_found, "shipping not found")
 
-    ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping["reserve_id"]})
+    ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping["reserve_id"]})
 
     if ssr["status"] not in [str(s) for s in (models.ShippingStatus.done, models.ShippingStatus.shipping)]:
         raise HttpException(requests.codes.forbidden, "shipment service側で配送中か配送完了になっていません")
@@ -716,7 +663,7 @@ def post_complete():
     shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one().with_for_update()
     if transaction_evidence.buyer_id != user.id:
         raise HttpException(requests.codes.forbidden, "権限がありません")
-    ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
+    ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
 
     if ssr["status"] != str(models.ShippingStatus.done):
         raise HttpException(requests.codes.bad_request, "shipment service側で配送完了になっていません")
