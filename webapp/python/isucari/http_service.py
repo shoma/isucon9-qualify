@@ -1,6 +1,7 @@
 import requests
 
 from .config import Constants
+from .exceptions import (PaymentError, PaymentFail, PaymentInvalid)
 
 
 class Shipping(object):
@@ -46,4 +47,12 @@ class Payment(object):
                                 price=params['price'],
                             ))
         res.raise_for_status()
-        return res.json()
+        data = res.json()
+        status = data['status']
+        if status == "invalid":
+            raise PaymentInvalid()
+        if status == "fail":
+            raise PaymentFail()
+        if status != "ok":
+            raise PaymentError()
+

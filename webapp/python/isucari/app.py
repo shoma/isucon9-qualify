@@ -16,6 +16,7 @@ from . import (utils,
                http_service,
                )
 from .config import Constants
+from .exceptions import *
 
 static_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../public'))
 
@@ -26,20 +27,6 @@ app.config['SQLALCHEMY_DATABASE_URI'] = database.get_dsn()
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
 
 database.init_db(app)
-
-
-class HttpException(Exception):
-    status_code = 500
-
-    def __init__(self, status_code, message=None):
-        Exception.__init__(self)
-        self.message = message
-        self.status_code = status_code
-
-    def get_response(self):
-        response = flask.jsonify({'error': self.message})
-        response.status_code = self.status_code
-        return response
 
 
 @app.errorhandler(HttpException)
@@ -61,7 +48,7 @@ def get_current_user():
     return get_user_by_id(user_id)
 
 
-def get_user_or_none():
+def get_user_or_none_or_none():
     user_id = flask.session.get("user_id")
     if user_id is None:
         return None
@@ -71,7 +58,7 @@ def get_user_or_none():
 def get_user_by_id(user_id):
     user = models.User.query.get(user_id)
     if user is None:
-        raise HttpException(requests.codes.not_found, "user not found")
+        raise UserNotFound()
     return user
 
 
@@ -274,11 +261,11 @@ def get_transactions():
         row.image_url = utils.get_image_url(row.image_name)
 
         transaction_evidence = models.TransactionEvidences.query.filter(
-            models.TransactionEvidences.item_id == row.id).one()
+            models.TransactionEvidences.item_id == row.id).one_or_none()
         if transaction_evidence is not None:
             shipping = models.Shipping.query.get(transaction_evidence.id)
             if not shipping:
-                raise HttpException(requests.codes.not_found, "shipping not found")
+                raise ShippingNotFound()
             ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
             row.transaction_evidence_id = transaction_evidence.id
             row.transaction_evidence_status = transaction_evidence.status
@@ -361,7 +348,7 @@ def get_item(item_id=None):
 
     item = models.Item.query.get(item_id)
     if item is None:
-        raise HttpException(requests.codes.not_found, "item not found")
+        raise ItemNotFound()
 
     seller = models.User.query.get(item.seller_id)
     category = get_category_by_id(item.category_id)
@@ -376,13 +363,13 @@ def get_item(item_id=None):
         item.buyer = buyer.for_simple_json()
         item.buyer_id = buyer.id
 
-        transaction_evidence = models.TransactionEvidences.query.filter(item_id=item.id).one()
+        transaction_evidence = models.TransactionEvidences.query.filter(item_id=item.id).one_or_none()
         item.transaction_evidence_id = transaction_evidence.id
         item.transaction_evidence_status = transaction_evidence.status
 
-        shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one()
+        shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one_or_none()
         if not shipping:
-            raise HttpException(requests.codes.not_found, "shipping not found")
+            raise ShippingNotFound()
 
         ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
         item.shipping_status = ssr["status"]
@@ -406,7 +393,7 @@ def post_item_edit():
 
     item = models.Item.query.get(item_id).with_for_update()
     if item is None:
-        raise HttpException(requests.codes.not_found, "item not found")
+        raise ItemNotFound()
     if item.seller_id != user.id:
         raise HttpException(requests.codes.forbidden, "自分の商品以外は編集できません")
     if item.status != models.ItemStatus.on_sale:
@@ -432,7 +419,7 @@ def post_buy():
 
     target_item = models.Item.query.get(flask.request.json['item_id']).with_for_update()
     if target_item is None:
-        raise HttpException(requests.codes.not_found, "item not found")
+        raise ItemNotFound()
     if target_item.status != models.ItemStatus.on_sale:
         raise HttpException(requests.codes.forbidden, "item is not for sale")
     if target_item.seller_id == buyer['id']:
@@ -467,14 +454,8 @@ def post_buy():
         from_name=seller['account_name'],
     ))
 
-    payment_res = http_service.Payment.token(get_payment_service_url(),
-                                             dict(token=flask.request.json['token'], price=target_item.price))
-    if payment_res['status'] == "invalid":
-        raise HttpException(requests.codes.bad_request, "カード情報に誤りがあります")
-    if payment_res['status'] == "fail":
-        raise HttpException(requests.codes.bad_request, "カードの残高が足りません")
-    if payment_res['status'] != "ok":
-        raise HttpException(requests.codes.bad_request, "想定外のエラー")
+    http_service.Payment.token(get_payment_service_url(),
+                               dict(token=flask.request.json['token'], price=target_item.price))
 
     shipping = models.Shipping(
         transaction_evidence_id=transaction_evidence.id,
@@ -527,7 +508,7 @@ def post_sell():
 
     seller = models.User.query.get(user.id).with_for_update()
     if seller is None:
-        raise HttpException(requests.codes.not_found, 'user not found')
+        raise UserNotFound()
     item = models.Item(
         seller_id=seller.id,
         status=models.ItemStatus.on_sale,
@@ -553,26 +534,26 @@ def post_ship():
     ensure_valid_csrf_token()
     user = get_current_user()
 
-    transaction_evidence = models.TransactionEvidences.query.filter(item_id=flask.request.json["item_id"]).one()
+    transaction_evidence = models.TransactionEvidences.query.filter(item_id=flask.request.json["item_id"]).one_or_none()
     if transaction_evidence is None:
-        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
+        raise TransactionEvidencesNotFound()
     if transaction_evidence.seller_id != user.id:
         raise HttpException(requests.codes.forbidden, "権限がありません")
 
     item = models.Item.query.get(flask.request.json["item_id"]).with_for_update()
     if item is None:
-        raise HttpException(requests.codes.not_found, "item not found")
+        raise ItemNotFound()
     if item.status != models.ItemStatus.trading:
         raise HttpException(requests.codes.forbidden, "商品が取引中ではありません")
     transaction_evidence = models.TransactionEvidences.query.get(transaction_evidence.id).with_for_update()
     if transaction_evidence is None:
-        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
+        raise TransactionEvidencesNotFound()
     if transaction_evidence.status != models.TransactionEvidenceStatus.wait_shipping:
         raise HttpException(requests.codes.forbidden, "準備ができていません")
 
-    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one().with_for_update()
+    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one_or_none().with_for_update()
     if shipping is None:
-        raise HttpException(requests.codes.not_found, "shipping not found")
+        raise ShippingNotFound()
 
     host = get_shipment_service_url()
     res = requests.post(host + "/request",
@@ -593,31 +574,31 @@ def post_ship():
 
 
 @app.route("/ship_done", methods=["POST"])
-def post_ship_done():
+def post_ship_done_or_none():
     ensure_valid_csrf_token()
     user = get_current_user()
 
-    transaction_evidence = models.TransactionEvidenceStatus.query.filter(item_id=flask.request.json["item_id"]).one()
+    transaction_evidence = models.TransactionEvidenceStatus.query.filter(item_id=flask.request.json["item_id"]).one_or_none()
     if transaction_evidence is None:
-        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
+        raise TransactionEvidencesNotFound()
     if transaction_evidence.seller_id != user.id:
         raise HttpException(requests.codes.forbidden, "権限がありません")
 
     item = models.Item.query.get(flask.request.json["item_id"]).with_for_update()
     if item is None:
-        raise HttpException(requests.codes.not_found, "item not found")
+        raise ItemNotFound()
     if item.status != models.ItemStatus.trading:
         raise HttpException(requests.codes.forbidden, "商品が取引中ではありません")
 
     transaction_evidence = models.TransactionEvidences.query.get(transaction_evidence.id).with_for_update()
     if transaction_evidence is None:
-        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
+        raise TransactionEvidencesNotFound()
     if transaction_evidence.status != models.TransactionEvidenceStatus.wait_shipping:
         raise HttpException(requests.codes.forbidden, "準備ができていません")
 
-    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one().with_for_update()
+    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one_or_none().with_for_update()
     if shipping is None:
-        raise HttpException(requests.codes.not_found, "shipping not found")
+        raise ShippingNotFound()
 
     ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping["reserve_id"]})
 
@@ -642,25 +623,25 @@ def post_complete():
     user = get_current_user()
     item_id = flask.request.json["item_id"]
 
-    transaction_evidence = models.TransactionEvidences.query.filter(item_id=item_id).one()
+    transaction_evidence = models.TransactionEvidences.query.filter(item_id=item_id).one_or_none()
     if transaction_evidence is None:
-        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
+        raise TransactionEvidencesNotFound()
     if transaction_evidence.buyer_id != user.id:
         raise HttpException(requests.codes.forbidden, "権限がありません")
 
     item = models.Item.query.get(item_id).with_for_update()
     if item is None:
-        raise HttpException(requests.codes.not_found, "item not found")
+        raise ItemNotFound()
     if item.status != models.ItemStatus.trading:
         raise HttpException(requests.codes.forbidden, "商品が取引中ではありません")
 
-    transaction_evidence = models.TransactionEvidences.query.filter(item_id=item_id).one().with_for_update()
+    transaction_evidence = models.TransactionEvidences.query.filter(item_id=item_id).one_or_none().with_for_update()
     if transaction_evidence is None:
-        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
+        raise TransactionEvidencesNotFound()
     if transaction_evidence.status != models.TransactionEvidenceStatus.wait_done:
         raise HttpException(requests.codes.forbidden, "準備ができていません")
 
-    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one().with_for_update()
+    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one_or_none().with_for_update()
     if transaction_evidence.buyer_id != user.id:
         raise HttpException(requests.codes.forbidden, "権限がありません")
     ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
@@ -692,12 +673,12 @@ def get_qrcode(transaction_evidence_id):
     seller = get_current_user()
     transaction_evidence = models.TransactionEvidences.query.get(transaction_evidence_id)
     if transaction_evidence is None:
-        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
+        raise TransactionEvidencesNotFound()
     if transaction_evidence.seller_id != seller.id:
         raise HttpException(requests.codes.forbidden, "権限がありません")
-    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one()
+    shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one_or_none()
     if shipping is None:
-        raise HttpException(requests.codes.not_found, "shippings not found")
+        raise ShippingNotFound()
     if shipping.status != str(models.ShippingStatus.wait_pickup) and \
             shipping.status != str(models.ShippingStatus.shipping):
         raise HttpException(requests.codes.forbidden, "qrcode not available")
@@ -718,12 +699,12 @@ def post_bump():
 
     item = models.Item.query.get(data['item_id']).with_for_update()
     if item is None:
-        raise HttpException(requests.codes.not_found, "item not found")
+        raise ItemNotFound()
     if item.seller_id != user.id:
         raise HttpException(requests.codes.forbidden, "自分の商品以外は編集できません")
     seller = models.User.query.get(user.id).with_for_update()
     if seller is None:
-        raise HttpException(requests.codes.not_found, "user not found")
+        raise UserNotFound()
 
     now = datetime.datetime.now()
     if seller.last_bump + datetime.timedelta(seconds=Constants.BUMP_ALLOW_SECONDS) > now:
@@ -750,7 +731,7 @@ def post_bump():
 @app.route("/settings", methods=["GET"])
 def get_settings():
     outputs = dict()
-    user = get_user_or_none()
+    user = get_user_or_none_or_none()
     if user is not None:
         outputs['user'] = user.for_json()
     outputs['csrf_token'] = flask.session.get('csrf_token', '')
