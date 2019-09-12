@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 class Constants(object):
     DEFAULT_PAYMENT_SERVICE_URL = "http://127.0.0.1:5555"
     DEFAULT_SHIPMENT_SERVICE_URL = "http://127.0.0.1:7000"
