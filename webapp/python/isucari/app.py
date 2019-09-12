@@ -9,6 +9,7 @@ import flask
 import bcrypt
 import requests
 from sqlalchemy import and_, or_
+from sqlalchemy.exc import SQLAlchemyError
 
 from . import (utils,
                database,
@@ -43,7 +44,7 @@ class Constants(object):
 class HttpException(Exception):
     status_code = 500
 
-    def __init__(self, status_code, message):
+    def __init__(self, status_code, message=None):
         Exception.__init__(self)
         self.message = message
         self.status_code = status_code
@@ -54,19 +55,22 @@ class HttpException(Exception):
         return response
 
 
-def http_json_error(code, msg):
-    raise HttpException(code, msg)
-
-
 @app.errorhandler(HttpException)
 def handle_http_exception(error):
     return error.get_response()
 
 
+@app.errorhandler(SQLAlchemyError)
+def handle_db_error(error):
+    response = flask.jsonify({'error': "db error"})
+    response.status_code = requests.codes.server_error
+    return response
+
+
 def get_current_user():
     user_id = flask.session.get("user_id")
     if user_id is None:
-        http_json_error(requests.codes['not_found'], "no session")
+        raise HttpException(requests.codes.not_found, "no session")
     return get_user_by_id(user_id)
 
 
@@ -99,12 +103,12 @@ def ensure_required_payload(keys=None):
         keys = []
     for k in keys:
         if not flask.request.json.get(k):
-            http_json_error(requests.codes['bad_request'], 'all parameters are required')
+            raise HttpException(requests.codes.bad_request, 'all parameters are required')
 
 
 def ensure_valid_csrf_token():
     if flask.request.json['csrf_token'] != flask.session['csrf_token']:
-        http_json_error(requests.codes['unprocessable_entity'], "csrf token error")
+        raise HttpException(requests.codes.unprocessable_entity, "csrf token error")
 
 
 def get_config(name):
@@ -134,7 +138,7 @@ def api_shipment_status(shipment_url, params=None):
         return res.json()
     except (socket.gaierror, requests.HTTPError) as err:
         app.logger.exception(err)
-        http_json_error(requests.codes.internal_server_error, "")
+        raise HttpException(requests.codes.internal_server_error, "")
 
 
 # API
@@ -167,13 +171,13 @@ def get_new_items():
     item_id_str = flask.request.args.get('item_id')
     if item_id_str:
         if not item_id_str.isdecimal() or int(item_id_str) < 0:
-            http_json_error(requests.codes['bad_request'], "item_id param error")
+            raise HttpException(requests.codes.bad_request, "item_id param error")
         item_id = int(item_id_str)
 
     created_at_str = flask.request.args.get('created_at')
     if created_at_str:
         if not created_at_str.isdecimal() or int(created_at_str) < 0:
-            http_json_error(requests.codes['bad_request'], "created_at param error")
+            raise HttpException(requests.codes.bad_request, "created_at param error")
         created_at = int(created_at_str)
     if item_id > 0 and created_at > 0:
         # paging
@@ -217,13 +221,13 @@ def get_new_category_items(root_category_id=None):
     item_id_str = flask.request.args.get('item_id')
     if item_id_str:
         if not item_id_str.isdecimal() or int(item_id_str) < 0:
-            http_json_error(requests.codes['bad_request'], "item_id param error")
+            raise HttpException(requests.codes.bad_request, "item_id param error")
         item_id = int(item_id_str)
 
     created_at_str = flask.request.args.get('created_at')
     if created_at_str:
         if not created_at_str.isdecimal() or int(created_at_str) < 0:
-            http_json_error(requests.codes['bad_request'], "created_at param error")
+            raise HttpException(requests.codes.bad_request, "created_at param error")
         created_at = int(created_at_str)
 
     categories = models.Category.query.filter(models.Category.parent_id == root_category_id).with_entities(
@@ -274,24 +278,24 @@ def get_transactions():
     item_id_str = flask.request.args.get('item_id')
     if item_id_str:
         if not item_id_str.isdecimal() or int(item_id_str) < 0:
-            http_json_error(requests.codes['bad_request'], "item_id param error")
+            raise HttpException(requests.codes.bad_request, "item_id param error")
         item_id = int(item_id_str)
 
     created_at_str = flask.request.args.get('created_at')
     if created_at_str:
         if not created_at_str.isdecimal() or int(created_at_str) < 0:
-            http_json_error(requests.codes['bad_request'], "created_at param error")
+            raise HttpException(requests.codes.bad_request, "created_at param error")
         created_at = int(created_at_str)
 
     if item_id > 0 and created_at > 0:
         # paging
         result = models.Item.query \
             .filter(or_(models.Item.seller_id == user.id, models.Item.buyer_id == user.id), models.Item.status.in_([
-                models.ItemStatus.on_sale,
-                models.ItemStatus.trading,
-                models.ItemStatus.sold_out,
-                models.ItemStatus.cancel,
-                models.ItemStatus.stop])) \
+            models.ItemStatus.on_sale,
+            models.ItemStatus.trading,
+            models.ItemStatus.sold_out,
+            models.ItemStatus.cancel,
+            models.ItemStatus.stop])) \
             .filter(or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at),
                         and_(models.Item.created_at <= datetime.datetime.fromtimestamp(created_at),
                              models.Item.created_at < item_id))) \
@@ -302,11 +306,11 @@ def get_transactions():
         # 1st page
         result = models.Item.query \
             .filter(or_(models.Item.seller_id == user.id, models.Item.buyer_id == user.id), models.Item.status.in_([
-                models.ItemStatus.on_sale,
-                models.ItemStatus.trading,
-                models.ItemStatus.sold_out,
-                models.ItemStatus.cancel,
-                models.ItemStatus.stop])) \
+            models.ItemStatus.on_sale,
+            models.ItemStatus.trading,
+            models.ItemStatus.sold_out,
+            models.ItemStatus.cancel,
+            models.ItemStatus.stop])) \
             .order_by(models.Item.created_at.desc()) \
             .order_by(models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
@@ -349,26 +353,26 @@ def get_user_items(user_id=None):
     item_id_str = flask.request.args.get('item_id')
     if item_id_str:
         if not item_id_str.isdecimal() or int(item_id_str) < 0:
-            http_json_error(requests.codes['bad_request'], "item_id param error")
+            raise HttpException(requests.codes.bad_request, "item_id param error")
         item_id = int(item_id_str)
 
     created_at_str = flask.request.args.get('created_at', 0)
     if created_at_str:
         if not created_at_str.isdecimal() or int(created_at_str) < 0:
-            http_json_error(requests.codes['bad_request'], "created_at param error")
+            raise HttpException(requests.codes.bad_request, "created_at param error")
         created_at = int(created_at_str)
 
     if item_id > 0 and created_at > 0:
         # paging
         result = models.Item.query \
             .filter(models.Item.seller_id == user.id, models.Item.status.in_([
-                models.ItemStatus.on_sale,
-                models.ItemStatus.trading,
-                models.ItemStatus.sold_out])) \
+            models.ItemStatus.on_sale,
+            models.ItemStatus.trading,
+            models.ItemStatus.sold_out])) \
             .filter(
-                or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at),
-                    and_(models.Item.created_at <= datetime.datetime.fromtimestamp(created_at),
-                         models.Item.created_at < item_id))) \
+            or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at),
+                and_(models.Item.created_at <= datetime.datetime.fromtimestamp(created_at),
+                     models.Item.created_at < item_id))) \
             .order_by(models.Item.created_at.desc()) \
             .order_by(models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
@@ -380,9 +384,9 @@ def get_user_items(user_id=None):
         # LIMIT %(param_1)s
         result = models.Item.query \
             .filter(models.Item.seller_id == user.id, models.Item.status.in_([
-                models.ItemStatus.on_sale,
-                models.ItemStatus.trading,
-                models.ItemStatus.sold_out])) \
+            models.ItemStatus.on_sale,
+            models.ItemStatus.trading,
+            models.ItemStatus.sold_out])) \
             .order_by(models.Item.created_at.desc()) \
             .order_by(models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
@@ -411,7 +415,7 @@ def get_item(item_id=None):
 
     item = models.Item.query.get(item_id)
     if item is None:
-        http_json_error(requests.codes['not_found'], "item not found")
+        raise HttpException(requests.codes.not_found, "item not found")
 
     seller = models.User.query.get(item.seller_id)
     category = get_category_by_id(item.category_id)
@@ -432,7 +436,7 @@ def get_item(item_id=None):
 
         shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one()
         if not shipping:
-            http_json_error(requests.codes['not_found'], "shipping not found")
+            raise HttpException(requests.codes.not_found, "shipping not found")
 
         ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
         item.shipping_status = ssr["status"]
@@ -451,16 +455,16 @@ def post_item_edit():
     price = int(flask.request.json['item_price'])
     item_id = int(flask.request.json['item_id'])
     if not 100 <= price <= 1000000:
-        http_json_error(requests.codes['bad_request'], "商品価格は100ｲｽｺｲﾝ以上、1,000,000ｲｽｺｲﾝ以下にしてください")
+        raise HttpException(requests.codes.bad_request, "商品価格は100ｲｽｺｲﾝ以上、1,000,000ｲｽｺｲﾝ以下にしてください")
     user = get_current_user()
 
     item = models.Item.query.get(item_id).with_for_update()
     if item is None:
-        http_json_error(requests.codes['not_found'], "item not found")
+        raise HttpException(requests.codes.not_found, "item not found")
     if item.seller_id != user.id:
-        http_json_error(requests.codes['forbidden'], "自分の商品以外は編集できません")
+        raise HttpException(requests.codes.forbidden, "自分の商品以外は編集できません")
     if item.status != models.ItemStatus.on_sale:
-        http_json_error(requests.codes['forbidden'], "販売中の商品以外編集できません")
+        raise HttpException(requests.codes.forbidden, "販売中の商品以外編集できません")
     item.price = flask.request.json["item_price"]
     item.updated_at = datetime.datetime.now()
 
@@ -482,15 +486,15 @@ def post_buy():
 
     target_item = models.Item.query.get(flask.request.json['item_id']).with_for_update()
     if target_item is None:
-        http_json_error(requests.codes['not_found'], "item not found")
-    if target_item['status'] != models.ItemStatus.on_sale:
-        http_json_error(requests.codes['forbidden'], "item is not for sale")
-    if target_item['seller_id'] == buyer['id']:
-        http_json_error(requests.codes['forbidden'], "自分の商品は買えません")
+        raise HttpException(requests.codes.not_found, "item not found")
+    if target_item.status != models.ItemStatus.on_sale:
+        raise HttpException(requests.codes.forbidden, "item is not for sale")
+    if target_item.seller_id == buyer['id']:
+        raise HttpException(requests.codes.forbidden, "自分の商品は買えません")
 
     seller = models.User.query.get(target_item['seller_id']).with_for_update()
     if seller is None:
-        http_json_error(requests.codes['not_found'], "seller not found")
+        raise HttpException(requests.codes.not_found, "seller not found")
     category = get_category_by_id(target_item['category_id'])
 
     transaction_evidence = models.TransactionEvidences(
@@ -524,7 +528,7 @@ def post_buy():
         shipping_res = res.json()
     except (socket.gaierror, requests.HTTPError) as er:
         app.logger.exception(er)
-        http_json_error(requests.codes['internal_server_error'])
+        raise HttpException(requests.codes.internal_server_error, None)
 
     host = get_payment_service_url()
     try:
@@ -538,14 +542,14 @@ def post_buy():
         res.raise_for_status()
         payment_res = res.json()
         if payment_res['status'] == "invalid":
-            http_json_error(requests.codes["bad_request"], "カード情報に誤りがあります")
+            raise HttpException(requests.codes.bad_request, "カード情報に誤りがあります")
         if payment_res['status'] == "fail":
-            http_json_error(requests.codes["bad_request"], "カードの残高が足りません")
+            raise HttpException(requests.codes.bad_request, "カードの残高が足りません")
         if payment_res['status'] != "ok":
-            http_json_error(requests.codes["bad_request"], "想定外のエラー")
+            raise HttpException(requests.codes.bad_request, "想定外のエラー")
     except (socket.gaierror, requests.HTTPError) as er:
         app.logger.exception(er)
-        http_json_error(requests.codes['internal_server_error'])
+        raise HttpException(requests.codes.internal_server_error)
 
     shipping = models.Shipping(
         transaction_evidence_id=transaction_evidence.id,
@@ -570,27 +574,27 @@ def post_buy():
 @app.route("/sell", methods=["POST"])
 def post_sell():
     if flask.request.form['csrf_token'] != flask.session['csrf_token']:
-        http_json_error(requests.codes['unprocessable_entity'], "csrf token error")
+        raise HttpException(requests.codes.unprocessable_entity, "csrf token error")
     for k in ["name", "description", "price", "category_id"]:
         if k not in flask.request.form or len(flask.request.form[k]) == 0:
-            http_json_error(requests.codes['bad_request'], 'all parameters are required')
+            raise HttpException(requests.codes.bad_request, 'all parameters are required')
 
     price = int(flask.request.form['price'])
     if not 100 <= price <= 1000000:
-        http_json_error(requests.codes['bad_request'], "商品価格は100ｲｽｺｲﾝ以上、1,000,000ｲｽｺｲﾝ以下にしてください")
+        raise HttpException(requests.codes.bad_request, "商品価格は100ｲｽｺｲﾝ以上、1,000,000ｲｽｺｲﾝ以下にしてください")
 
     category = get_category_by_id(flask.request.form['category_id'])
     if category['parent_id'] == 0:
-        http_json_error(requests.codes['bad_request'], 'Incorrect category ID')
+        raise HttpException(requests.codes.bad_request, 'Incorrect category ID')
     user = get_current_user()
 
     if "image" not in flask.request.files:
-        http_json_error(requests.codes['internal_server_error'], 'image error')
+        raise HttpException(requests.codes.internal_server_error, 'image error')
 
     file = flask.request.files['image']
     ext = os.path.splitext(file.filename)[1]
     if ext not in ('.jpg', 'jpeg', '.png', 'gif'):
-        http_json_error(requests.codes['bad_request'], 'unsupported image format error error')
+        raise HttpException(requests.codes.bad_request, 'unsupported image format error error')
     if ext == ".jpeg":
         ext = ".jpg"
     imagename = "{0}{1}".format(utils.random_string(32), ext)
@@ -598,7 +602,7 @@ def post_sell():
 
     seller = models.User.query.get(user.id).with_for_update()
     if seller is None:
-        http_json_error(requests['not_found'], 'user not found')
+        raise HttpException(requests.codes.not_found, 'user not found')
     item = models.Item(
         seller_id=seller.id,
         status=models.ItemStatus.on_sale,
@@ -626,24 +630,24 @@ def post_ship():
 
     transaction_evidence = models.TransactionEvidences.query.filter(item_id=flask.request.json["item_id"]).one()
     if transaction_evidence is None:
-        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
     if transaction_evidence.seller_id != user.id:
-        http_json_error(requests.codes['forbidden'], "権限がありません")
+        raise HttpException(requests.codes.forbidden, "権限がありません")
 
     item = models.Item.query.get(flask.request.json["item_id"]).with_for_update()
     if item is None:
-        http_json_error(requests.codes["not_found"], "item not found")
+        raise HttpException(requests.codes.not_found, "item not found")
     if item.status != models.ItemStatus.trading:
-        http_json_error(requests.codes["forbidden"], "商品が取引中ではありません")
+        raise HttpException(requests.codes.forbidden, "商品が取引中ではありません")
     transaction_evidence = models.TransactionEvidences.query.get(transaction_evidence.id).with_for_update()
     if transaction_evidence is None:
-        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
     if transaction_evidence.status != models.TransactionEvidenceStatus.wait_shipping:
-        http_json_error(requests.codes['forbidden'], "準備ができていません")
+        raise HttpException(requests.codes.forbidden, "準備ができていません")
 
     shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one().with_for_update()
     if shipping is None:
-        http_json_error(requests.codes["not_found"], "shipping not found")
+        raise HttpException(requests.codes.not_found, "shipping not found")
     try:
         host = get_shipment_service_url()
         res = requests.post(host + "/request",
@@ -652,7 +656,7 @@ def post_ship():
         res.raise_for_status()
     except (socket.gaierror, requests.HTTPError) as err:
         app.logger.exception(err)
-        http_json_error(requests.codes["internal_server_error"], "failed to request to shipment service")
+        raise HttpException(requests.codes.internal_server_error, "failed to request to shipment service")
     shipping.status = models.ShippingStatus.wait_pickup
     shipping.img_binary = res.content
     shipping.updated_at = datetime.datetime.now()
@@ -673,30 +677,30 @@ def post_ship_done():
 
     transaction_evidence = models.TransactionEvidenceStatus.query.filter(item_id=flask.request.json["item_id"]).one()
     if transaction_evidence is None:
-        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
     if transaction_evidence.seller_id != user.id:
-        http_json_error(requests.codes['forbidden'], "権限がありません")
+        raise HttpException(requests.codes.forbidden, "権限がありません")
 
     item = models.Item.query.get(flask.request.json["item_id"]).with_for_update()
     if item is None:
-        http_json_error(requests.codes["not_found"], "item not found")
+        raise HttpException(requests.codes.not_found, "item not found")
     if item.status != models.ItemStatus.trading:
-        http_json_error(requests.codes["forbidden"], "商品が取引中ではありません")
+        raise HttpException(requests.codes.forbidden, "商品が取引中ではありません")
 
     transaction_evidence = models.TransactionEvidences.query.get(transaction_evidence.id).with_for_update()
     if transaction_evidence is None:
-        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
     if transaction_evidence.status != models.TransactionEvidenceStatus.wait_shipping:
-        http_json_error(requests.codes['forbidden'], "準備ができていません")
+        raise HttpException(requests.codes.forbidden, "準備ができていません")
 
     shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one().with_for_update()
     if shipping is None:
-        http_json_error(requests.codes["not_found"], "shipping not found")
+        raise HttpException(requests.codes.not_found, "shipping not found")
 
     ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping["reserve_id"]})
 
     if ssr["status"] not in [str(s) for s in (models.ShippingStatus.done, models.ShippingStatus.shipping)]:
-        http_json_error(requests.codes["forbidden"], "shipment service側で配送中か配送完了になっていません")
+        raise HttpException(requests.codes.forbidden, "shipment service側で配送中か配送完了になっていません")
     shipping.status = models.Shipping[ssr["status"]]
     shipping.updated_at = datetime.datetime.now()
     database.db.session.update(shipping)
@@ -718,29 +722,29 @@ def post_complete():
 
     transaction_evidence = models.TransactionEvidences.query.filter(item_id=item_id).one()
     if transaction_evidence is None:
-        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
     if transaction_evidence.buyer_id != user.id:
-        http_json_error(requests.codes['forbidden'], "権限がありません")
+        raise HttpException(requests.codes.forbidden, "権限がありません")
 
     item = models.Item.query.get(item_id).with_for_update()
     if item is None:
-        http_json_error(requests.codes["not_found"], "item not found")
+        raise HttpException(requests.codes.not_found, "item not found")
     if item.status != models.ItemStatus.trading:
-        http_json_error(requests.codes["forbidden"], "商品が取引中ではありません")
+        raise HttpException(requests.codes.forbidden, "商品が取引中ではありません")
 
     transaction_evidence = models.TransactionEvidences.query.filter(item_id=item_id).one().with_for_update()
     if transaction_evidence is None:
-        http_json_error(requests.codes["not_found"], "transaction_evidences not found")
+        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
     if transaction_evidence.status != models.TransactionEvidenceStatus.wait_done:
-        http_json_error(requests.codes['forbidden'], "準備ができていません")
+        raise HttpException(requests.codes.forbidden, "準備ができていません")
 
     shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one().with_for_update()
-    if transaction_evidence["buyer_id"] != user.id:
-        http_json_error(requests.codes['forbidden'], "権限がありません")
+    if transaction_evidence.buyer_id != user.id:
+        raise HttpException(requests.codes.forbidden, "権限がありません")
     ssr = api_shipment_status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
 
     if ssr["status"] != str(models.ShippingStatus.done):
-        http_json_error(requests.codes["bad_request"], "shipment service側で配送完了になっていません")
+        raise HttpException(requests.codes.bad_request, "shipment service側で配送完了になっていません")
     shipping.status = models.ShippingStatus.done
     shipping.updated_at = datetime.datetime.now()
     database.db.session.update(shipping)
@@ -762,22 +766,22 @@ def post_complete():
 def get_qrcode(transaction_evidence_id):
     if transaction_evidence_id:
         if not transaction_evidence_id.isdecimal() or int(transaction_evidence_id) <= 0:
-            http_json_error(requests.codes['bad_request'], "incorrect transaction_evidence id")
+            raise HttpException(requests.codes.bad_request, "incorrect transaction_evidence id")
 
     seller = get_current_user()
     transaction_evidence = models.TransactionEvidences.query.get(transaction_evidence_id)
     if transaction_evidence is None:
-        http_json_error(requests.codes['not_found'], "transaction_evidences not found")
+        raise HttpException(requests.codes.not_found, "transaction_evidences not found")
     if transaction_evidence.seller_id != seller.id:
-        http_json_error(requests.codes['forbidden'], "権限がありません")
+        raise HttpException(requests.codes.forbidden, "権限がありません")
     shipping = models.Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one()
     if shipping is None:
-        http_json_error(requests.codes['not_found'], "shippings not found")
+        raise HttpException(requests.codes.not_found, "shippings not found")
     if shipping.status != str(models.ShippingStatus.wait_pickup) and \
             shipping.status != str(models.ShippingStatus.shipping):
-        http_json_error(requests.codes['forbidden'], "qrcode not available")
+        raise HttpException(requests.codes.forbidden, "qrcode not available")
     if len(shipping.img_binary) == 0:
-        http_json_error(requests.codes['internal_server_error'], "empty qrcode image")
+        raise HttpException(requests.codes.internal_server_error, "empty qrcode image")
 
     res = flask.make_response(shipping.img_binary)
     res.headers.set('Content-Type', 'image/png')
@@ -842,7 +846,7 @@ def post_login():
     user = models.User.query.filter_by(account_name=flask.request.json['account_name']).first()
     if user is None or \
             not bcrypt.checkpw(flask.request.json['password'].encode('utf-8'), user.hashed_password):
-        http_json_error(requests.codes['unauthorized'], 'アカウント名かパスワードが間違えています')
+        raise HttpException(requests.codes.unauthorized, 'アカウント名かパスワードが間違えています')
     flask.session['user_id'] = user.id
     flask.session['csrf_token'] = utils.random_string(10)
     return flask.jsonify(
@@ -855,21 +859,17 @@ def post_register():
     ensure_required_payload(['account_name', 'password', 'address'])
     hashedpw = bcrypt.hashpw(flask.request.json['password'].encode('utf-8'), bcrypt.gensalt(10))
 
-    try:
-        user = models.User(account_name=flask.request.json['account_name'], hashed_password=hashedpw,
-                           address=flask.request.json['address'])
-        database.db.session.add(user)
-        database.db.session.commit()
-        flask.session['user_id'] = user.id
-        flask.session['csrf_token'] = utils.random_string(10)
-        return flask.jsonify({
-            'id': user.id,
-            'account_name': flask.request.json['account_name'],
-            'address': flask.request.json['address'],
-        })
-    except Exception as err:
-        app.logger.exception(err)
-        http_json_error(requests.codes['internal_server_error'], 'db error')
+    user = models.User(account_name=flask.request.json['account_name'], hashed_password=hashedpw,
+                       address=flask.request.json['address'])
+    database.db.session.add(user)
+    database.db.session.commit()
+    flask.session['user_id'] = user.id
+    flask.session['csrf_token'] = utils.random_string(10)
+    return flask.jsonify({
+        'id': user.id,
+        'account_name': flask.request.json['account_name'],
+        'address': flask.request.json['address'],
+    })
 
 
 @app.route("/reports.json", methods=["GET"])
