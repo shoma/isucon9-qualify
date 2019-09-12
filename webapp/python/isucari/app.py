@@ -185,15 +185,13 @@ def get_new_category_items(root_category_id=None):
             models.Item.status.in_([models.ItemStatus.on_sale, models.ItemStatus.sold_out]),
             models.Item.category_id.in_(categories),
             or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at), models.Item.id < item_id)) \
-            .order_by(models.Item.created_at.desc()) \
-            .order_by(models.Item.id.desc()) \
+            .order_by(models.Item.created_at.desc(), models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
     else:
         results = models.Item.query.filter(
             models.Item.status.in_([models.ItemStatus.on_sale, models.ItemStatus.sold_out]),
             models.Item.category_id.in_(categories)) \
-            .order_by(models.Item.created_at.desc()) \
-            .order_by(models.Item.id.desc()) \
+            .order_by(models.Item.created_at.desc(), models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
     items = []
     for row in results:
@@ -239,8 +237,7 @@ def get_transactions():
             .filter(or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at),
                         and_(models.Item.created_at <= datetime.datetime.fromtimestamp(created_at),
                              models.Item.created_at < item_id))) \
-            .order_by(models.Item.created_at.desc()) \
-            .order_by(models.Item.id.desc()) \
+            .order_by(models.Item.created_at.desc(), models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
     else:
         # 1st page
@@ -251,8 +248,7 @@ def get_transactions():
             models.ItemStatus.sold_out,
             models.ItemStatus.cancel,
             models.ItemStatus.stop])) \
-            .order_by(models.Item.created_at.desc()) \
-            .order_by(models.Item.id.desc()) \
+            .order_by(models.Item.created_at.desc(), models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
     items = []
     for row in result:
@@ -306,8 +302,7 @@ def get_user_items(user_id=None):
             or_(models.Item.created_at < datetime.datetime.fromtimestamp(created_at),
                 and_(models.Item.created_at <= datetime.datetime.fromtimestamp(created_at),
                      models.Item.created_at < item_id))) \
-            .order_by(models.Item.created_at.desc()) \
-            .order_by(models.Item.id.desc()) \
+            .order_by(models.Item.created_at.desc(), models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
     else:
         # 1st page
@@ -320,8 +315,7 @@ def get_user_items(user_id=None):
             models.ItemStatus.on_sale,
             models.ItemStatus.trading,
             models.ItemStatus.sold_out])) \
-            .order_by(models.Item.created_at.desc()) \
-            .order_by(models.Item.id.desc()) \
+            .order_by(models.Item.created_at.desc(), models.Item.id.desc()) \
             .limit(Constants.ITEMS_PER_PAGE + 1)
     items = []
     for row in result:
