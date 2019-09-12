@@ -168,20 +168,14 @@ def post_initialize():
 
 @app.route("/new_items.json", methods=["GET"])
 def get_new_items():
-    item_id = 0
-    created_at = 0
+    item_id = flask.request.args.get('item_id',  default=0, type=int)
+    if item_id < 0:
+        raise HttpException(requests.codes.bad_request, "item_id param error")
 
-    item_id_str = flask.request.args.get('item_id')
-    if item_id_str:
-        if not item_id_str.isdecimal() or int(item_id_str) < 0:
-            raise HttpException(requests.codes.bad_request, "item_id param error")
-        item_id = int(item_id_str)
+    created_at = flask.request.args.get('created_at',  default=0, type=int)
+    if created_at < 0:
+        raise HttpException(requests.codes.bad_request, "created_at param error")
 
-    created_at_str = flask.request.args.get('created_at')
-    if created_at_str:
-        if not created_at_str.isdecimal() or int(created_at_str) < 0:
-            raise HttpException(requests.codes.bad_request, "created_at param error")
-        created_at = int(created_at_str)
     if item_id > 0 and created_at > 0:
         # paging
         results = models.Item.query.filter(
@@ -214,25 +208,17 @@ def get_new_items():
     ))
 
 
-@app.route("/new_items/<root_category_id>.json", methods=["GET"])
+@app.route("/new_items/<int:root_category_id>.json", methods=["GET"])
 def get_new_category_items(root_category_id=None):
+    item_id = flask.request.args.get('item_id',  default=0, type=int)
+    if item_id < 0:
+        raise HttpException(requests.codes.bad_request, "item_id param error")
+
+    created_at = flask.request.args.get('created_at',  default=0, type=int)
+    if created_at < 0:
+        raise HttpException(requests.codes.bad_request, "created_at param error")
+
     root_category = get_category_by_id(root_category_id)
-
-    item_id = 0
-    created_at = 0
-
-    item_id_str = flask.request.args.get('item_id')
-    if item_id_str:
-        if not item_id_str.isdecimal() or int(item_id_str) < 0:
-            raise HttpException(requests.codes.bad_request, "item_id param error")
-        item_id = int(item_id_str)
-
-    created_at_str = flask.request.args.get('created_at')
-    if created_at_str:
-        if not created_at_str.isdecimal() or int(created_at_str) < 0:
-            raise HttpException(requests.codes.bad_request, "created_at param error")
-        created_at = int(created_at_str)
-
     categories = models.Category.query.filter(models.Category.parent_id == root_category_id).with_entities(
         models.Category.id)
 
@@ -275,20 +261,13 @@ def get_new_category_items(root_category_id=None):
 def get_transactions():
     user = get_current_user()
 
-    item_id = 0
-    created_at = 0
+    item_id = flask.request.args.get('item_id',  default=0, type=int)
+    if item_id < 0:
+        raise HttpException(requests.codes.bad_request, "item_id param error")
 
-    item_id_str = flask.request.args.get('item_id')
-    if item_id_str:
-        if not item_id_str.isdecimal() or int(item_id_str) < 0:
-            raise HttpException(requests.codes.bad_request, "item_id param error")
-        item_id = int(item_id_str)
-
-    created_at_str = flask.request.args.get('created_at')
-    if created_at_str:
-        if not created_at_str.isdecimal() or int(created_at_str) < 0:
-            raise HttpException(requests.codes.bad_request, "created_at param error")
-        created_at = int(created_at_str)
+    created_at = flask.request.args.get('created_at',  default=0, type=int)
+    if created_at < 0:
+        raise HttpException(requests.codes.bad_request, "created_at param error")
 
     if item_id > 0 and created_at > 0:
         # paging
@@ -346,24 +325,17 @@ def get_transactions():
     ))
 
 
-@app.route("/users/<user_id>.json", methods=["GET"])
+@app.route("/users/<int:user_id>.json", methods=["GET"])
 def get_user_items(user_id=None):
     user = get_user_by_id(user_id)
 
-    item_id = 0
-    created_at = 0
+    item_id = flask.request.args.get('item_id',  default=0, type=int)
+    if item_id < 0:
+        raise HttpException(requests.codes.bad_request, "item_id param error")
 
-    item_id_str = flask.request.args.get('item_id')
-    if item_id_str:
-        if not item_id_str.isdecimal() or int(item_id_str) < 0:
-            raise HttpException(requests.codes.bad_request, "item_id param error")
-        item_id = int(item_id_str)
-
-    created_at_str = flask.request.args.get('created_at', 0)
-    if created_at_str:
-        if not created_at_str.isdecimal() or int(created_at_str) < 0:
-            raise HttpException(requests.codes.bad_request, "created_at param error")
-        created_at = int(created_at_str)
+    created_at = flask.request.args.get('created_at',  default=0, type=int)
+    if created_at < 0:
+        raise HttpException(requests.codes.bad_request, "created_at param error")
 
     if item_id > 0 and created_at > 0:
         # paging
@@ -412,7 +384,7 @@ def get_user_items(user_id=None):
     ))
 
 
-@app.route("/items/<item_id>.json", methods=["GET"])
+@app.route("/items/<int:item_id>.json", methods=["GET"])
 def get_item(item_id=None):
     user = get_current_user()
 
@@ -765,11 +737,10 @@ def post_complete():
     return flask.jsonify(dict(transaction_evidence_id=transaction_evidence.id))
 
 
-@app.route("/transactions/<transaction_evidence_id>.png", methods=["GET"])
+@app.route("/transactions/<int:transaction_evidence_id>.png", methods=["GET"])
 def get_qrcode(transaction_evidence_id):
-    if transaction_evidence_id:
-        if not transaction_evidence_id.isdecimal() or int(transaction_evidence_id) <= 0:
-            raise HttpException(requests.codes.bad_request, "incorrect transaction_evidence id")
+    if int(transaction_evidence_id) <= 0:
+        raise HttpException(requests.codes.bad_request, "incorrect transaction_evidence id")
 
     seller = get_current_user()
     transaction_evidence = models.TransactionEvidences.query.get(transaction_evidence_id)
