@@ -101,9 +101,12 @@ def get_category_by_id(category_id):
 def ensure_required_payload(keys=None):
     if keys is None:
         keys = []
+    data = {}
     for k in keys:
         if not flask.request.json.get(k):
             raise HttpException(requests.codes.bad_request, 'all parameters are required')
+        data[k] = flask.request.json.get(k)
+    return data
 
 
 def ensure_valid_csrf_token():
@@ -450,10 +453,10 @@ def get_item(item_id=None):
 @app.route("/items/edit", methods=["POST"])
 def post_item_edit():
     ensure_valid_csrf_token()
-    ensure_required_payload(['item_price', 'item_id'])
+    data = ensure_required_payload(['item_price', 'item_id'])
 
-    price = int(flask.request.json['item_price'])
-    item_id = int(flask.request.json['item_id'])
+    price = int(data['item_price'])
+    item_id = int(data['item_id'])
     if not 100 <= price <= 1000000:
         raise HttpException(requests.codes.bad_request, "商品価格は100ｲｽｺｲﾝ以上、1,000,000ｲｽｺｲﾝ以下にしてください")
     user = get_current_user()
@@ -792,10 +795,10 @@ def get_qrcode(transaction_evidence_id):
 @app.route("/bump", methods=["POST"])
 def post_bump():
     ensure_valid_csrf_token()
-    ensure_required_payload(['item_id'])
+    data = ensure_required_payload(['item_id'])
     user = get_current_user()
 
-    item = models.Item.query.get(flask.request.json['item_id']).with_for_update()
+    item = models.Item.query.get(data['item_id']).with_for_update()
     if item is None:
         raise HttpException(requests.codes.not_found, "item not found")
     if item.seller_id != user.id:
@@ -842,10 +845,10 @@ def get_settings():
 
 @app.route("/login", methods=["POST"])
 def post_login():
-    ensure_required_payload(['account_name', 'password'])
-    user = models.User.query.filter_by(account_name=flask.request.json['account_name']).first()
+    data = ensure_required_payload(['account_name', 'password'])
+    user = models.User.query.filter_by(account_name=data['account_name']).first()
     if user is None or \
-            not bcrypt.checkpw(flask.request.json['password'].encode('utf-8'), user.hashed_password):
+            not bcrypt.checkpw(data['password'].encode('utf-8'), user.hashed_password):
         raise HttpException(requests.codes.unauthorized, 'アカウント名かパスワードが間違えています')
     flask.session['user_id'] = user.id
     flask.session['csrf_token'] = utils.random_string(10)
@@ -856,11 +859,11 @@ def post_login():
 
 @app.route("/register", methods=["POST"])
 def post_register():
-    ensure_required_payload(['account_name', 'password', 'address'])
-    hashedpw = bcrypt.hashpw(flask.request.json['password'].encode('utf-8'), bcrypt.gensalt(10))
+    data = ensure_required_payload(['account_name', 'password', 'address'])
+    hashedpw = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt(10))
 
-    user = models.User(account_name=flask.request.json['account_name'], hashed_password=hashedpw,
-                       address=flask.request.json['address'])
+    user = models.User(account_name=data['account_name'], hashed_password=hashedpw,
+                       address=data['address'])
     database.db.session.add(user)
     database.db.session.commit()
     flask.session['user_id'] = user.id
