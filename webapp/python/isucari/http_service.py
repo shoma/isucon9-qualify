@@ -31,7 +31,15 @@ class Shipping(object):
             base_url + "/status",
             headers=dict(Authorization=Constants.ISUCARI_API_TOKEN),
             json=params,
-            )
+        )
+        res.raise_for_status()
+        return res.json()
+
+    @classmethod
+    def request(cls, base_url, reserve_id):
+        res = requests.post(base_url + "/request",
+                            headers=dict(Authorization=Constants.ISUCARI_API_TOKEN),
+                            json=dict(reserve_id=reserve_id))
         res.raise_for_status()
         return res.json()
 
@@ -57,4 +65,3 @@ class Payment(object):
             raise PaymentFail()
         if status != "ok":
             raise PaymentError()
-

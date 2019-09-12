@@ -12,3 +12,4 @@ class Constants(object):
     ITEMS_PER_PAGE = 48
     TRANSACTIONS_PER_PAGE = 10
     BUMP_ALLOW_SECONDS = 3
+

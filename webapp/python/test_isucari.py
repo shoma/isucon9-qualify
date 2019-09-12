@@ -34,5 +34,23 @@ class ExceptionsTestCase(unittest.TestCase):
             self.assertEqual(b'{"error":"\\u60f3\\u5b9a\\u5916\\u306e\\u30a8\\u30e9\\u30fc"}\n', resp.data)
 
 
+class ValidatorTestCase(unittest.TestCase):
+    def test_validate_price(self):
+        with self.assertRaises(isucari.HttpException):
+            isucari.validator.validate_price(99)
+
+        with self.assertRaises(isucari.HttpException):
+            isucari.validator.validate_price(1000001)
+
+        try:
+            isucari.validator.validate_price(100)
+        except isucari.HttpException:
+            self.fail('unexpected Exception')
+        try:
+            isucari.validator.validate_price(1000000)
+        except isucari.HttpException:
+            self.fail('unexpected Exception')
+
+
 if __name__ == '__main__':
     unittest.main()
