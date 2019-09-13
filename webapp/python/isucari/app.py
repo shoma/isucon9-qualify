@@ -4,7 +4,6 @@ import os
 import subprocess
 
 import flask
-from flask_caching import Cache
 import requests
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -13,16 +12,15 @@ from . import (utils,
                models,
                isucari,
                )
-from .config import Constants, Config
+from .config import Constants, Config, base_dir, static_folder
+from .cache import cache
 from .exceptions import HttpException
 
-base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-static_folder = os.path.abspath(os.path.join(base_dir, '..', 'public'))
 
 app = flask.Flask(__name__, static_folder=static_folder, static_url_path='', template_folder=static_folder)
 app.config.from_mapping(Config)
 
-cache = Cache(app)
+cache.init_app(app)
 database.init_db(app)
 
 

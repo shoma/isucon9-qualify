@@ -3,7 +3,7 @@
 import bcrypt
 import datetime
 import os
-from typing import List
+from typing import List, Dict
 
 from requests import codes
 from werkzeug.datastructures import FileStorage
@@ -14,45 +14,53 @@ from .models import (User, Item, TransactionEvidences, Shipping, Category, Confi
                      TransactionEvidenceStatus)
 from .database import db
 from .exceptions import (HttpException, ItemNotFound, UserNotFound, TransactionEvidencesNotFound, ShippingNotFound)
-from . import http_service, validator, utils, app, cache
+from .cache import cache
+from . import http_service, validator, utils, app
 
 Items = List[Item]
 
 
 @cache.cached(timeout=120, key_prefix='get_all_category')
-def get_all_category():
+def get_all_category() -> dict:
     category = Category.query.all()
-    data = {}
+    data: Dict[int, Category] = {}
     for c in category:
-        data[c.id] = category
+        data[c.id] = c
     for k in data.keys():
         if data[k].parent_id != 0:
             data[k].parent_category_name = data[data[k].parent_id].category_name
     return data
 
 
-def get_category_by_id(category_id):
+def get_category_by_id(category_id) -> Category:
     cached_all_category = get_all_category()
     if category_id not in cached_all_category:
         raise HttpException(codes.not_found, "category not found")
     return cached_all_category[category_id]
 
 
-def get_config(name) -> Config:
-    return Config.query.get(name)
+@cache.cached(timeout=120, key_prefix='get_config')
+def get_config() -> dict:
+    configs = Config.query.all()
+    data: Dict[str, str] = {}
+    for c in configs:
+        data[c.name] = c.val
+    return data
 
 
 def get_payment_service_url() -> str:
-    config = get_config("payment_service_url")
-    return Constants.DEFAULT_PAYMENT_SERVICE_URL if config is None else config.val
+    key = "payment_service_url"
+    config = get_config()
+    return Constants.DEFAULT_PAYMENT_SERVICE_URL if key not in config else config[key]
 
 
 def get_shipment_service_url() -> str:
-    config = get_config("shipment_service_url")
-    return Constants.DEFAULT_SHIPMENT_SERVICE_URL if config is None else config.val
+    key = "shipment_service_url"
+    config = get_config()
+    return Constants.DEFAULT_SHIPMENT_SERVICE_URL if key not in config else config[key]
 
 
-def save_config(name, val):
+def save_config(name: str, val: str):
     config = Config.query.get(name)
     if config is None:
         config = Config(name=name, val=val)
@@ -290,15 +298,18 @@ def buy(buyer: User, item_id: int, token: str) -> int:
     target_item.status = ItemStatus.trading
     target_item.updated_at = datetime.datetime.now()
 
-    shipping_res = http_service.Shipping.create(get_shipment_service_url(), dict(
-        to_address=buyer.address,
-        to_name=buyer.account_name,
-        from_address=seller.address,
-        from_name=seller.account_name,
-    ))
-
-    http_service.Payment.token(get_payment_service_url(),
-                               dict(token=token, price=target_item.price))
+    shipping_res = http_service.buy(
+        {
+            "shipment_service_url": get_shipment_service_url(),
+            "buyer_address": buyer.address,
+            "buyer_account_name": buyer.account_name,
+            "seller_address": seller.address,
+            "seller_account_name": seller.account_name,
+            "payment_service_url": get_payment_service_url(),
+            "token": token,
+            "price": target_item.price
+        }
+    )
 
     shipping = Shipping(
         transaction_evidence_id=transaction_evidence.id,

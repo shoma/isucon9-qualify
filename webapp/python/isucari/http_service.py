@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import requests
+import concurrent.futures
 
 from .config import Constants
 from .exceptions import (PaymentError, PaymentFail, PaymentInvalid)
@@ -65,3 +66,33 @@ class Payment(object):
             raise PaymentFail()
         if status != "ok":
             raise PaymentError()
+
+
+def buy(params):
+    def create_shipping():
+        res = Shipping.create(params['shipment_service_url'], dict(
+            to_address=params['buyer_address'],
+            to_name=params['buyer_account_name'],
+            from_address=['seller_address'],
+            from_name=['seller_account_name'],
+        ))
+        return res
+
+    def payment_token():
+        Payment.token(params['payment_service_url'], dict(token=params['token'], price=params['price']))
+        return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        executor.submit(create_shipping)
+        executor.submit(payment_token)
+
+        rtn = None
+        for future in concurrent.futures.as_completed():
+            try:
+                data = future.result()
+                if data is not None:
+                    rtn = data
+            except Exception as err:
+                raise err
+
+        return rtn

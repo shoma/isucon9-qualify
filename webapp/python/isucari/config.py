@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 import os
 
-from .app import static_folder
 from .database import get_dsn
+
+
+base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+static_folder = os.path.abspath(os.path.join(base_dir, '..', 'public'))
 
 
 class Constants(object):
