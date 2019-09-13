@@ -4,6 +4,7 @@ import os
 import subprocess
 
 import flask
+from flask_caching import Cache
 import requests
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -12,18 +13,16 @@ from . import (utils,
                models,
                isucari,
                )
-from .config import Constants
+from .config import Constants, Config
 from .exceptions import HttpException
 
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 static_folder = os.path.abspath(os.path.join(base_dir, '..', 'public'))
 
 app = flask.Flask(__name__, static_folder=static_folder, static_url_path='', template_folder=static_folder)
-app.config['SECRET_KEY'] = 'isucari'
-app.config['UPLOAD_FOLDER'] = os.path.join(static_folder, 'upload')
-app.config['SQLALCHEMY_DATABASE_URI'] = database.get_dsn()
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
+app.config.from_mapping(Config)
 
+cache = Cache(app)
 database.init_db(app)
 
 

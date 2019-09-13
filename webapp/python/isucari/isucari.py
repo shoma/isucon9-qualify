@@ -14,19 +14,28 @@ from .models import (User, Item, TransactionEvidences, Shipping, Category, Confi
                      TransactionEvidenceStatus)
 from .database import db
 from .exceptions import (HttpException, ItemNotFound, UserNotFound, TransactionEvidencesNotFound, ShippingNotFound)
-from . import http_service, validator, utils, app
+from . import http_service, validator, utils, app, cache
 
 Items = List[Item]
 
 
+@cache.cached(timeout=120, key_prefix='get_all_category')
+def get_all_category():
+    category = Category.query.all()
+    data = {}
+    for c in category:
+        data[c.id] = category
+    for k in data.keys():
+        if data[k].parent_id != 0:
+            data[k].parent_category_name = data[data[k].parent_id].category_name
+    return data
+
+
 def get_category_by_id(category_id):
-    category = Category.query.get(category_id)
-    if category is None:
+    cached_all_category = get_all_category()
+    if category_id not in cached_all_category:
         raise HttpException(codes.not_found, "category not found")
-    if category.parent_id != 0:
-        parent = get_category_by_id(category.parent_id)
-        category.parent_category_name = parent.category_name
-    return category
+    return cached_all_category[category_id]
 
 
 def get_config(name) -> Config:
@@ -139,10 +148,9 @@ def transaction_items(user: User, item_id: int, created_at: int) -> Items:
             shipping = Shipping.query.get(transaction_evidence.id)
             if not shipping:
                 raise ShippingNotFound()
-            ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
             row.transaction_evidence_id = transaction_evidence.id
             row.transaction_evidence_status = transaction_evidence.status
-            row.shipping_status = ShippingStatus[ssr["status"]]
+            row.shipping_status = shipping.status
         items.append(row)
     return items
 

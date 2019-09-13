@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+import os
+
+from .app import static_folder
+from .database import get_dsn
+
 
 class Constants(object):
     DEFAULT_PAYMENT_SERVICE_URL = "http://127.0.0.1:5555"
@@ -13,3 +18,12 @@ class Constants(object):
     TRANSACTIONS_PER_PAGE = 10
     BUMP_ALLOW_SECONDS = 3
 
+
+Config = {
+    'SECRET_KEY': 'tagomoris',
+    'UPLOAD_FOLDER': os.path.join(static_folder, 'upload'),
+    'SQLALCHEMY_DATABASE_URI': get_dsn(),
+    'SQLALCHEMY_TRACK_MODIFICATIONS': True,
+    'CACHE_TYPE' : 'simple',
+    'CACHE_DEFAULT_TIMEOUT': 300
+}
