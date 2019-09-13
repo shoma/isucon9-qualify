@@ -440,11 +440,11 @@ def get_qr_code(seller: User, transaction_evidence_id: int) -> Shipping:
         raise HttpException(codes.forbidden, "qrcode not available")
     if len(shipping.img_binary) == 0:
         raise HttpException(codes.internal_server_error, "empty qrcode image")
-    return shipping
+    return shipping.img_binary
 
 
-def bump(user: User, payload) -> Item:
-    item = Item.query.with_for_update().get(payload['item_id'])
+def bump(user: User, item_id) -> Item:
+    item = Item.query.with_for_update().get(item_id)
     if item is None:
         raise ItemNotFound()
     if item.seller_id != user.id:
@@ -453,7 +453,7 @@ def bump(user: User, payload) -> Item:
     if seller is None:
         raise UserNotFound()
 
-    now = datetime.datetime.now()
+    now = current_time()
     if seller.last_bump + datetime.timedelta(seconds=Constants.BUMP_ALLOW_SECONDS) > now:
         raise HttpException(codes.forbidden, "Bump not allowed")
 
@@ -466,18 +466,23 @@ def bump(user: User, payload) -> Item:
     return item
 
 
-def login(payload) -> User:
-    user = User.query.filter_by(account_name=payload['account_name']).one_or_none()
+def current_time() -> datetime.datetime:
+    # for mock in testing
+    return datetime.datetime.now()
+
+
+def login(account_name: str, password: str) -> User:
+    user = User.query.filter(User.account_name == account_name).one_or_none()
     if user is None or \
-            not bcrypt.checkpw(payload['password'].encode('utf-8'), user.hashed_password):
+            not bcrypt.checkpw(password.encode('utf-8'), user.hashed_password):
         raise HttpException(codes.unauthorized, 'アカウント名かパスワードが間違えています')
     return user
 
 
-def register(payload) -> User:
-    hashed = bcrypt.hashpw(payload['password'].encode('utf-8'), bcrypt.gensalt(10))
+def register(account_name:str, password:str, address:str) -> User:
+    hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(10))
 
-    user = User(account_name=payload['account_name'], hashed_password=hashed, address=payload['address'])
+    user = User(account_name=account_name, hashed_password=hashed, address=address)
     db.session.add(user)
     db.session.commit()
     return user

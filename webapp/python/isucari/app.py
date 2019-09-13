@@ -287,9 +287,9 @@ def get_qrcode(transaction_evidence_id):
         raise HttpException(requests.codes.bad_request, "incorrect transaction_evidence id")
 
     seller = get_current_user()
-    shipping = core.get_qr_code(seller, transaction_evidence_id)
+    img_binary = core.get_qr_code(seller, transaction_evidence_id)
 
-    res = flask.make_response(shipping.img_binary)
+    res = flask.make_response(img_binary)
     res.headers.set('Content-Type', 'image/png')
 
     return res
@@ -301,7 +301,7 @@ def post_bump():
     data = ensure_required_payload(['item_id'])
     user = get_current_user()
 
-    item = core.bump(user, data)
+    item = core.bump(user, data['item_id'])
 
     return flask.jsonify({
         'item_id': item.id,
@@ -328,7 +328,7 @@ def get_settings():
 @app.route("/login", methods=["POST"])
 def post_login():
     data = ensure_required_payload(['account_name', 'password'])
-    user = core.login(data)
+    user = core.login(data['account_name'], data['password'])
 
     flask.session['user_id'] = user.id
     flask.session['csrf_token'] = utils.random_string(10)
@@ -340,7 +340,7 @@ def post_login():
 @app.route("/register", methods=["POST"])
 def post_register():
     data = ensure_required_payload(['account_name', 'password', 'address'])
-    user = core.register(data)
+    user = core.register(data['account_name'], data['password'], data['address'])
 
     flask.session['user_id'] = user.id
     flask.session['csrf_token'] = utils.random_string(10)
