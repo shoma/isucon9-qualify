@@ -13,7 +13,7 @@ from . import (utils,
                isucari,
                )
 from .config import Constants
-from .exceptions import *
+from .exceptions import HttpException
 
 static_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../public'))
 
@@ -42,7 +42,7 @@ def get_current_user():
     user_id = flask.session.get("user_id")
     if user_id is None:
         raise HttpException(requests.codes.not_found, "no session")
-    return get_user_by_id(user_id)
+    return models.User.query.get(user_id)
 
 
 def get_user_or_none():
@@ -50,23 +50,6 @@ def get_user_or_none():
     if user_id is None:
         return None
     return models.User.query.get(user_id)
-
-
-def get_user_by_id(user_id):
-    user = models.User.query.get(user_id)
-    if user is None:
-        raise UserNotFound()
-    return user
-
-
-def get_category_by_id(category_id):
-    category = models.Category.query.get(category_id)
-    if category is None:
-        raise HttpException(requests.codes.not_found, "category not found")
-    if category.parent_id != 0:
-        parent = models.Category.query.get(category.parent_id)
-        category.parent_category_name = parent.category_name
-    return category
 
 
 def ensure_required_payload(keys=None):
@@ -85,35 +68,15 @@ def ensure_valid_csrf_token():
         raise HttpException(requests.codes.unprocessable_entity, "csrf token error")
 
 
-def get_config(name):
-    return models.Config.query.get(name)
-
-
-def get_payment_service_url():
-    config = get_config("payment_service_url")
-    return Constants.DEFAULT_PAYMENT_SERVICE_URL if config is None else config.val
-
-
-def get_shipment_service_url():
-    config = get_config("shipment_service_url")
-    return Constants.DEFAULT_SHIPMENT_SERVICE_URL if config is None else config.val
-
-
 # API
 @app.route("/initialize", methods=["POST"])
 def post_initialize():
     subprocess.call(["../sql/init.sh"])
 
     payment_service_url = flask.request.json.get('payment_service_url', Constants.DEFAULT_PAYMENT_SERVICE_URL)
+    isucari.save_config('payment_service_url', payment_service_url)
     shipment_service_url = flask.request.json.get('shipment_service_url', Constants.DEFAULT_SHIPMENT_SERVICE_URL)
-
-    payment_service_url_config = models.Config(name="payment_service_url", val=payment_service_url)
-    database.db.session.add(payment_service_url_config)
-
-    shipment_service_url_config = models.Config(name="shipment_service_url", val=shipment_service_url)
-    database.db.session.add(payment_service_url_config)
-    database.db.session.add(shipment_service_url_config)
-    database.db.session.commit()
+    isucari.save_config('shipment_service_url', shipment_service_url)
 
     return flask.jsonify({
         "campaign": 0,  # キャンペーン実施時には還元率の設定を返す。詳しくはマニュアルを参照のこと。
@@ -153,7 +116,7 @@ def get_new_category_items(root_category_id=None):
     if created_at < 0:
         raise HttpException(requests.codes.bad_request, "created_at param error")
 
-    items = isucari.category_items(item_id, created_at, root_category_id)
+    root_category, items = isucari.category_items(item_id, created_at, root_category_id)
 
     has_next = False
     if len(items) > Constants.ITEMS_PER_PAGE:
@@ -195,7 +158,7 @@ def get_transactions():
 
 @app.route("/users/<int:user_id>.json", methods=["GET"])
 def get_user_items(user_id=None):
-    user = get_user_by_id(user_id)
+    user = models.User.query.get(user_id)
 
     item_id = flask.request.args.get('item_id', default=0, type=int)
     if item_id < 0:
@@ -357,7 +320,7 @@ def get_settings():
     outputs['csrf_token'] = flask.session.get('csrf_token', '')
     categories = models.Category.query.all()
     outputs['categories'] = [c.for_json() for c in categories]
-    outputs['payment_service_url'] = get_payment_service_url()
+    outputs['payment_service_url'] = isucari.get_payment_service_url()
 
     return flask.jsonify(outputs)
 

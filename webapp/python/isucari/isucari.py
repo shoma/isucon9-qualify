@@ -43,20 +43,29 @@ def get_shipment_service_url() -> str:
     return Constants.DEFAULT_SHIPMENT_SERVICE_URL if config is None else config.val
 
 
-def timeline(item_id: int, created_at: int) -> Items:
-    q = Item.query.filter(
-        Item.status.in_([ItemStatus.on_sale, ItemStatus.sold_out]),
+def save_config(name, val):
+    config = Config(name=name, val=val)
+    db.session.update(config)
+    db.session.commit()
+
+
+item_status_for_public = [ItemStatus.on_sale, ItemStatus.sold_out]
+
+
+def paging_query(item_id: int, created_at: int):
+    ts = datetime.datetime.fromtimestamp(created_at)
+    q = or_(
+        Item.created_at < ts,
+        and_(Item.created_at <= ts, Item.id < item_id)
     )
+    return q
+
+
+def timeline(item_id: int, created_at: int) -> Items:
+    q = Item.query.filter(Item.status.in_(item_status_for_public))
     if item_id > 0 and created_at > 0:
         # paging
-        ts = datetime.datetime.fromtimestamp(created_at)
-        q.filter(
-            or_(
-                Item.created_at < ts,
-                and_(Item.created_at <= ts,
-                     Item.id < item_id)
-            )
-        )
+        q.filter(paging_query(item_id, created_at))
 
     q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE + 1)
 
@@ -69,23 +78,17 @@ def timeline(item_id: int, created_at: int) -> Items:
     return items
 
 
-def category_items(item_id: int, created_at: int, root_category_id: int) -> Items:
+def category_items(item_id: int, created_at: int, root_category_id: int) -> (Category, Items):
+    root_category = get_category_by_id(root_category_id)
     categories = Category.query.filter(Category.parent_id == root_category_id).with_entities(Category.id)
 
     q = Item.query.filter(
-        Item.status.in_([
-            ItemStatus.on_sale,
-            ItemStatus.sold_out,
-        ]),
+        Item.status.in_(item_status_for_public),
         Item.category_id.in_(categories),
     )
     if item_id > 0 and created_at > 0:
         # paging
-        ts = datetime.datetime.fromtimestamp(created_at)
-        q.filter(or_(
-            Item.created_at < ts,
-            Item.id < item_id
-        ))
+        q.filter(paging_query(item_id, created_at))
     q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE+1)
 
     items = []
@@ -94,7 +97,7 @@ def category_items(item_id: int, created_at: int, root_category_id: int) -> Item
         row.category = get_category_by_id(row.category_id).for_json()
         row.image_url = utils.get_image_url(row.image_name)
         items.append(row)
-    return items
+    return root_category, items
 
 
 def transaction_items(user: User, item_id: int, created_at: int) -> Items:
@@ -114,14 +117,7 @@ def transaction_items(user: User, item_id: int, created_at: int) -> Items:
 
     if item_id > 0 and created_at > 0:
         # paging
-        ts = datetime.datetime.fromtimestamp(created_at)
-        q.filter(or_(
-            Item.created_at < ts,
-            and_(
-                Item.created_at <= ts,
-                Item.id < item_id
-            )
-        ))
+        q.filter(paging_query(item_id, created_at))
     q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE+1)
 
     items = []
@@ -154,10 +150,7 @@ def user_time_line(user: User, item_id: int, created_at: int) -> Items:
         ]))
     if item_id > 0 and created_at > 0:
         # paging
-        ts = datetime.datetime.fromtimestamp(created_at)
-        q.filter(or_(Item.created_at < ts,
-                     and_(Item.created_at <= ts,
-                          Item.id < item_id)))
+        q.filter(paging_query(item_id, created_at))
     q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE + 1)
     items = []
     for row in q:
