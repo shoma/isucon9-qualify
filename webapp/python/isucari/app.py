@@ -15,9 +15,10 @@ from . import (utils,
 from .config import Constants
 from .exceptions import HttpException
 
-static_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../public'))
+base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+static_folder = os.path.abspath(os.path.join(base_dir, '..', 'public'))
 
-app = flask.Flask(__name__, static_folder=str(static_folder), static_url_path='', template_folder=static_folder)
+app = flask.Flask(__name__, static_folder=static_folder, static_url_path='', template_folder=static_folder)
 app.config['SECRET_KEY'] = 'isucari'
 app.config['UPLOAD_FOLDER'] = os.path.join(static_folder, 'upload')
 app.config['SQLALCHEMY_DATABASE_URI'] = database.get_dsn()
@@ -35,6 +36,7 @@ def handle_http_exception(error):
 def handle_db_error(error):
     response = flask.jsonify({'error': "db error"})
     response.status_code = requests.codes.server_error
+    app.logger.exception(error)
     return response
 
 
@@ -71,7 +73,8 @@ def ensure_valid_csrf_token():
 # API
 @app.route("/initialize", methods=["POST"])
 def post_initialize():
-    subprocess.call(["../sql/init.sh"])
+    d = os.path.abspath(os.path.join(base_dir, '..', 'sql'))
+    subprocess.call([d + "/init.sh"])
 
     payment_service_url = flask.request.json.get('payment_service_url', Constants.DEFAULT_PAYMENT_SERVICE_URL)
     isucari.save_config('payment_service_url', payment_service_url)
@@ -353,7 +356,7 @@ def post_register():
 
 @app.route("/reports.json", methods=["GET"])
 def get_reports():
-    transaction_evidences = models.TransactionEvidences.query.filter(models.TransactionEvidences.id > 15007).all()
+    transaction_evidences = models.TransactionEvidences.query.filter(models.TransactionEvidences.id > 15007)
     return flask.jsonify([t.for_json() for t in transaction_evidences])
 
 

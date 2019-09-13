@@ -44,8 +44,12 @@ def get_shipment_service_url() -> str:
 
 
 def save_config(name, val):
-    config = Config(name=name, val=val)
-    db.session.update(config)
+    config = Config.query.get(name)
+    if config is None:
+        config = Config(name=name, val=val)
+        db.session.add(config)
+    else:
+        config.val = val
     db.session.commit()
 
 
@@ -65,9 +69,9 @@ def timeline(item_id: int, created_at: int) -> Items:
     q = Item.query.filter(Item.status.in_(item_status_for_public))
     if item_id > 0 and created_at > 0:
         # paging
-        q.filter(paging_query(item_id, created_at))
+        q = q.filter(paging_query(item_id, created_at))
 
-    q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE + 1)
+    q = q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE + 1)
 
     items = []
     for row in q:
@@ -88,8 +92,8 @@ def category_items(item_id: int, created_at: int, root_category_id: int) -> (Cat
     )
     if item_id > 0 and created_at > 0:
         # paging
-        q.filter(paging_query(item_id, created_at))
-    q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE+1)
+        q = q.filter(paging_query(item_id, created_at))
+    q = q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE+1)
 
     items = []
     for row in q:
@@ -117,14 +121,17 @@ def transaction_items(user: User, item_id: int, created_at: int) -> Items:
 
     if item_id > 0 and created_at > 0:
         # paging
-        q.filter(paging_query(item_id, created_at))
-    q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE+1)
+        q = q.filter(paging_query(item_id, created_at))
+    q = q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE+1)
 
     items = []
     for row in q:
         row.seller = User.query.get(row.seller_id).for_simple_json()
         row.category = get_category_by_id(row.category_id).for_json()
         row.image_url = utils.get_image_url(row.image_name)
+
+        if row.buyer_id != 0:
+            row.buyer = User.query.get(row.buyer_id).for_simple_json()
 
         transaction_evidence = TransactionEvidences.query.filter(
             TransactionEvidences.item_id == row.id).one_or_none()
@@ -135,7 +142,7 @@ def transaction_items(user: User, item_id: int, created_at: int) -> Items:
             ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
             row.transaction_evidence_id = transaction_evidence.id
             row.transaction_evidence_status = transaction_evidence.status
-            row.shipping_status = ssr["status"]
+            row.shipping_status = ShippingStatus[ssr["status"]]
         items.append(row)
     return items
 
@@ -150,12 +157,12 @@ def user_time_line(user: User, item_id: int, created_at: int) -> Items:
         ]))
     if item_id > 0 and created_at > 0:
         # paging
-        q.filter(paging_query(item_id, created_at))
-    q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE + 1)
+        q = q.filter(paging_query(item_id, created_at))
+    q = q.order_by(Item.created_at.desc(), Item.id.desc()).limit(Constants.ITEMS_PER_PAGE + 1)
     items = []
     for row in q:
         row.seller = User.query.get(row.seller_id).for_simple_json()
-        row.category = get_category_by_id(row.category_id)
+        row.category = get_category_by_id(row.category_id).for_json()
         row.image_url = utils.get_image_url(row.image_name)
         items.append(row)
     return items
@@ -179,16 +186,16 @@ def get_item(user: User, item_id: int) -> Item:
         item.buyer = buyer.for_simple_json()
         item.buyer_id = buyer.id
 
-        transaction_evidence = TransactionEvidences.query.filter(item_id=item.id).one_or_none()
+        transaction_evidence = TransactionEvidences.query.filter(TransactionEvidences.item_id == item.id).one_or_none()
         item.transaction_evidence_id = transaction_evidence.id
         item.transaction_evidence_status = transaction_evidence.status
 
-        shipping = Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one_or_none()
+        shipping = Shipping.query.filter(Shipping.transaction_evidence_id == transaction_evidence.id).one_or_none()
         if not shipping:
             raise ShippingNotFound()
 
         ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
-        item.shipping_status = ssr["status"]
+        item.shipping_status = ShippingStatus[ssr["status"]]
     return item
 
 
@@ -205,9 +212,9 @@ def sell(user: User, name: str, description: str, price: int, category_id: int, 
     if ext == ".jpeg":
         ext = ".jpg"
     imagename = "{0}{1}".format(utils.random_string(32), ext)
-    image.save(os.path.join(app.config['UPLOAD_FOLDER'], imagename))
+    image.save(os.path.join(app.app.config['UPLOAD_FOLDER'], imagename))
 
-    seller = User.query.get(user.id).with_for_update()
+    seller = User.query.with_for_update().get(user.id)
     if seller is None:
         raise UserNotFound()
     item = Item(
@@ -223,7 +230,6 @@ def sell(user: User, name: str, description: str, price: int, category_id: int, 
 
     seller.num_sell_items = seller.num_sell_items + 1
     seller.last_bump = datetime.datetime.now()
-    db.session.update(seller)
 
     db.session.commit()
     return item
@@ -231,7 +237,7 @@ def sell(user: User, name: str, description: str, price: int, category_id: int, 
 
 def edit(seller: User, item_id: int, price: int) -> Item:
     validator.validate_price(price)
-    item = Item.query.get(item_id).with_for_update()
+    item = Item.query.with_for_update().get(item_id)
     if item is None:
         raise ItemNotFound()
     if item.seller_id != seller.id:
@@ -241,13 +247,12 @@ def edit(seller: User, item_id: int, price: int) -> Item:
     item.price = price
     item.updated_at = datetime.datetime.now()
 
-    db.session.update(item)
     db.session.commit()
     return item
 
 
 def buy(buyer: User, item_id: int, token: str) -> int:
-    target_item = Item.query.get(item_id).with_for_update()
+    target_item = Item.query.with_for_update().get(item_id)
     if target_item is None:
         raise ItemNotFound()
     if target_item.status != ItemStatus.on_sale:
@@ -255,10 +260,10 @@ def buy(buyer: User, item_id: int, token: str) -> int:
     if target_item.seller_id == buyer.id:
         raise HttpException(codes.forbidden, "自分の商品は買えません")
 
-    seller = User.query.get(target_item['seller_id']).with_for_update()
+    seller = User.query.with_for_update().get(target_item.seller_id)
     if seller is None:
         raise HttpException(codes.not_found, "seller not found")
-    category = get_category_by_id(target_item['category_id'])
+    category = get_category_by_id(target_item.category_id)
 
     transaction_evidence = TransactionEvidences(
         seller_id=seller.id,
@@ -276,13 +281,12 @@ def buy(buyer: User, item_id: int, token: str) -> int:
     target_item.buyer_id = buyer.id
     target_item.status = ItemStatus.trading
     target_item.updated_at = datetime.datetime.now()
-    db.session.update(target_item)
 
     shipping_res = http_service.Shipping.create(get_shipment_service_url(), dict(
-        to_address=buyer['address'],
-        to_name=buyer['account_name'],
-        from_address=seller['address'],
-        from_name=seller['account_name'],
+        to_address=buyer.address,
+        to_name=buyer.account_name,
+        from_address=seller.address,
+        from_name=seller.account_name,
     ))
 
     http_service.Payment.token(get_payment_service_url(),
@@ -296,10 +300,10 @@ def buy(buyer: User, item_id: int, token: str) -> int:
         reserve_id=shipping_res["reserve_id"],
         reserve_time=shipping_res["reserve_time"],
         to_address=buyer.address,
-        to_name=buyer.name,
+        to_name=buyer.account_name,
         from_address=seller.address,
-        from_name=seller.name,
-        img_binary=""
+        from_name=seller.account_name,
+        img_binary=bytes('', 'utf8')
     )
     db.session.add(shipping)
 
@@ -308,24 +312,24 @@ def buy(buyer: User, item_id: int, token: str) -> int:
 
 
 def ship(user: User, item_id: int) -> (int, str):
-    transaction_evidence = TransactionEvidences.query.filter(item_id=item_id).one_or_none()
+    transaction_evidence = TransactionEvidences.query.filter(TransactionEvidences.item_id == item_id).one_or_none()
     if transaction_evidence is None:
         raise TransactionEvidencesNotFound()
     if transaction_evidence.seller_id != user.id:
         raise HttpException(codes.forbidden, "権限がありません")
 
-    item = Item.query.get(item_id).with_for_update()
+    item = Item.query.with_for_update().get(item_id)
     if item is None:
         raise ItemNotFound()
     if item.status != ItemStatus.trading:
         raise HttpException(codes.forbidden, "商品が取引中ではありません")
-    transaction_evidence = TransactionEvidences.query.get(transaction_evidence.id).with_for_update()
+    transaction_evidence = TransactionEvidences.query.with_for_update().get(transaction_evidence.id)
     if transaction_evidence is None:
         raise TransactionEvidencesNotFound()
     if transaction_evidence.status != TransactionEvidenceStatus.wait_shipping:
         raise HttpException(codes.forbidden, "準備ができていません")
 
-    shipping = Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one_or_none().with_for_update()
+    shipping = Shipping.query.with_for_update().filter(Shipping.transaction_evidence_id==transaction_evidence.id).one_or_none()
     if shipping is None:
         raise ShippingNotFound()
 
@@ -335,13 +339,12 @@ def ship(user: User, item_id: int) -> (int, str):
     shipping.img_binary = res.content
     shipping.updated_at = datetime.datetime.now()
 
-    db.session.update(shipping)
     db.session.commit()
     return transaction_evidence.id, shipping.reserve_id
 
 
 def ship_done(user: User, item_id: int) -> TransactionEvidences:
-    transaction_evidence = TransactionEvidences.query.filter(item_id).one_or_none().with_for_update()
+    transaction_evidence = TransactionEvidences.query.with_for_update().filter(TransactionEvidences.item_id == item_id).one_or_none()
     if transaction_evidence is None:
         raise TransactionEvidencesNotFound()
     if transaction_evidence.seller_id != user.id:
@@ -356,35 +359,33 @@ def ship_done(user: User, item_id: int) -> TransactionEvidences:
     if transaction_evidence.status != TransactionEvidenceStatus.wait_shipping:
         raise HttpException(codes.forbidden, "準備ができていません")
 
-    shipping = Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one_or_none().with_for_update()
+    shipping = Shipping.query.with_for_update().get(transaction_evidence.id)
     if shipping is None:
         raise ShippingNotFound()
 
-    ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping["reserve_id"]})
+    ssr = http_service.Shipping.status(get_shipment_service_url(), {"reserve_id": shipping.reserve_id})
     if ssr["status"] not in [str(s) for s in (ShippingStatus.done, ShippingStatus.shipping)]:
         raise HttpException(codes.forbidden, "shipment service側で配送中か配送完了になっていません")
 
     now = datetime.datetime.now()
-    shipping.status = ShippingStatus[Shipping[ssr["status"]]]
+    shipping.status = ShippingStatus[ssr["status"]]
     shipping.updated_at = now
-    db.session.update(shipping)
 
     transaction_evidence.status = TransactionEvidenceStatus.wait_done
     transaction_evidence.updated_at = now
-    db.session.update(transaction_evidence)
 
     db.session.commit()
     return transaction_evidence
 
 
 def complete(user: User, item_id: int) -> TransactionEvidences:
-    transaction_evidence = TransactionEvidences.query.filter(item_id=item_id).one_or_none().with_for_update()
+    transaction_evidence = TransactionEvidences.query.with_for_update().filter(TransactionEvidences.item_id==item_id).one_or_none()
     if transaction_evidence is None:
         raise TransactionEvidencesNotFound()
     if transaction_evidence.buyer_id != user.id:
         raise HttpException(codes.forbidden, "権限がありません")
 
-    item = Item.query.get(item_id).with_for_update()
+    item = Item.query.with_for_update().get(item_id)
     if item is None:
         raise ItemNotFound()
     if item.status != ItemStatus.trading:
@@ -393,7 +394,7 @@ def complete(user: User, item_id: int) -> TransactionEvidences:
     if transaction_evidence.status != TransactionEvidenceStatus.wait_done:
         raise HttpException(codes.forbidden, "準備ができていません")
 
-    shipping = Shipping.query.filter(transaction_evidence_id=transaction_evidence.id).one_or_none().with_for_update()
+    shipping = Shipping.query.with_for_update().get(transaction_evidence.id)
     if transaction_evidence.buyer_id != user.id:
         raise HttpException(codes.forbidden, "権限がありません")
 
@@ -403,15 +404,12 @@ def complete(user: User, item_id: int) -> TransactionEvidences:
 
     shipping.status = ShippingStatus.done
     shipping.updated_at = datetime.datetime.now()
-    db.session.update(shipping)
 
     transaction_evidence.status = TransactionEvidenceStatus.done
     transaction_evidence.updated_at = datetime.datetime.now()
-    db.session.update(transaction_evidence)
 
     item.status = ItemStatus.sold_out
     item.updated_at = datetime.datetime.now()
-    db.session.update(item)
 
     db.session.commit()
     return transaction_evidence
@@ -434,12 +432,12 @@ def get_qr_code(seller: User, transaction_evidence_id: int) -> Shipping:
 
 
 def bump(user: User, payload) -> Item:
-    item = Item.query.get(payload['item_id']).with_for_update()
+    item = Item.query.with_for_update().get(payload['item_id'])
     if item is None:
         raise ItemNotFound()
     if item.seller_id != user.id:
         raise HttpException(codes.forbidden, "自分の商品以外は編集できません")
-    seller = User.query.get(user.id).with_for_update()
+    seller = User.query.with_for_update().get(user.id)
     if seller is None:
         raise UserNotFound()
 
@@ -449,10 +447,8 @@ def bump(user: User, payload) -> Item:
 
     item.created_at = now
     item.updated_at = now
-    db.session.update(item)
 
     seller.last_bump = now
-    db.session.update(seller)
 
     db.session.commit()
     return item

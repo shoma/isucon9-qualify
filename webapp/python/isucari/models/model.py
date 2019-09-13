@@ -40,7 +40,7 @@ class Item(db.Model):
 
     id = db.Column(db.BigInteger, primary_key=True)
     seller_id = db.Column(db.BigInteger, nullable=False)
-    buyer_id = db.Column(db.BigInteger, nullable=False)
+    buyer_id = db.Column(db.BigInteger, nullable=False, default=0)
     status = db.Column(db.Enum(ItemStatus), nullable=False, default=ItemStatus.on_sale)
     name = db.Column(db.String(length=191), nullable=False)
     price = db.Column(db.Integer, nullable=False)
@@ -93,17 +93,17 @@ class Item(db.Model):
             "name": self.name,
             "price": self.price,
             "description": self.description,
-            "image_name": self.image_name,
+            "image_url": self.image_url,
             "category_id": self.category_id,
             "category": self.category,
             "created_at": int(self.created_at.timestamp()),
         }
-        extra = {
-            "buyer_id": self.buyer_id,
-            "buyer": self.buyer,
-            "transaction_evidence_id": self.transaction_evidence_id,
-        }
-        rtn.update({k: v for k, v in extra.items() if v is not None})
+
+        if self.buyer is not None:
+            rtn["buyer_id"] = self.buyer_id
+            rtn["buyer"] = self.buyer
+        if self.transaction_evidence_id != 0:
+            rtn["transaction_evidence_id"] = self.transaction_evidence_id
         if self.transaction_evidence_status is not None:
             rtn["transaction_evidence_status"] = self.transaction_evidence_status.value
         if self.shipping_status is not None:
@@ -147,7 +147,7 @@ class Shipping(db.Model):
     status = db.Column(db.Enum(ShippingStatus), nullable=False, default=ShippingStatus.initial)
     item_name = db.Column(db.String(length=191), nullable=False)
     item_id = db.Column(db.BigInteger, nullable=False)
-    reserve_id = db.Column(db.String(length=191), primary_key=True)
+    reserve_id = db.Column(db.String(length=191))
     reserve_time = db.Column(db.BigInteger, nullable=False)
     to_address = db.Column(db.String(length=191), nullable=False)
     to_name = db.Column(db.String(length=191), nullable=False)

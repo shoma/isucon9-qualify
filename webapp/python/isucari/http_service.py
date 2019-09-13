@@ -41,7 +41,7 @@ class Shipping(object):
                             headers=dict(Authorization=Constants.ISUCARI_API_TOKEN),
                             json=dict(reserve_id=reserve_id))
         res.raise_for_status()
-        return res.json()
+        return res
 
 
 class Payment(object):
