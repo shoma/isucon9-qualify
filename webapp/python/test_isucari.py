@@ -1,6 +1,7 @@
 import unittest
 
 from . import isucari
+from .isucari import exceptions, utils, validator
 
 
 class UtilsTestCase(unittest.TestCase):
@@ -16,7 +17,7 @@ class UtilsTestCase(unittest.TestCase):
 
 class ExceptionsTestCase(unittest.TestCase):
     def test_UserNotFound(self):
-        e = isucari.UserNotFound()
+        e = exceptions.UserNotFound()
         self.assertEqual(404, e.status_code)
         self.assertEqual("user not found", e.message)
         with isucari.app.app_context():
@@ -25,7 +26,7 @@ class ExceptionsTestCase(unittest.TestCase):
             self.assertEqual(b'{"error":"user not found"}\n', resp.data)
 
     def test_PaymentError(self):
-        e = isucari.PaymentError()
+        e = exceptions.PaymentError()
         self.assertEqual(500, e.status_code)
         self.assertEqual("想定外のエラー", e.message)
         with isucari.app.app_context():
@@ -36,19 +37,19 @@ class ExceptionsTestCase(unittest.TestCase):
 
 class ValidatorTestCase(unittest.TestCase):
     def test_validate_price(self):
-        with self.assertRaises(isucari.HttpException):
-            isucari.validator.validate_price(99)
+        with self.assertRaises(exceptions.HttpException):
+            validator.validate_price(99)
 
-        with self.assertRaises(isucari.HttpException):
-            isucari.validator.validate_price(1000001)
+        with self.assertRaises(exceptions.HttpException):
+            validator.validate_price(1000001)
 
         try:
-            isucari.validator.validate_price(100)
-        except isucari.HttpException:
+            validator.validate_price(100)
+        except exceptions.HttpException:
             self.fail('unexpected Exception')
         try:
-            isucari.validator.validate_price(1000000)
-        except isucari.HttpException:
+            validator.validate_price(1000000)
+        except exceptions.HttpException:
             self.fail('unexpected Exception')
 
 
