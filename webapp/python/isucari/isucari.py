@@ -126,14 +126,7 @@ def transaction_items(user: User, item_id: int, created_at: int) -> Items:
         or_(
             Item.seller_id == user.id,
             Item.buyer_id == user.id
-        ),
-        Item.status.in_([
-            ItemStatus.on_sale,
-            ItemStatus.trading,
-            ItemStatus.sold_out,
-            ItemStatus.cancel,
-            ItemStatus.stop
-        ])
+        )
     )
 
     if item_id > 0 and created_at > 0:
